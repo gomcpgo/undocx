@@ -1,0 +1,9 @@
+# Files written by other tools (Word, LibreOffice, pandoc) must never be
+# committed. Test documents are built in code by internal/docxtest.
+*.docx
+*.docm
+*.dotx
+*.dotm
+*.test
+*.prof
+/undocx
