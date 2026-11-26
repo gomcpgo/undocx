@@ -12,8 +12,6 @@
 package docxtest
 
 import (
-	"archive/zip"
-	"bytes"
 	"fmt"
 	"sort"
 	"strings"
@@ -43,10 +41,11 @@ const (
 	nsW14 = "http://schemas.microsoft.com/office/word/2010/wordml"
 	nsW15 = "http://schemas.microsoft.com/office/word/2012/wordml"
 
-	ctMain     = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
-	ctMacro    = "application/vnd.ms-word.document.macroEnabled.main+xml"
-	ctTemplate = "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"
-	ctWML      = "application/vnd.openxmlformats-officedocument.wordprocessingml."
+	ctMain          = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+	ctMacro         = "application/vnd.ms-word.document.macroEnabled.main+xml"
+	ctTemplate      = "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"
+	ctMacroTemplate = "application/vnd.ms-word.template.macroEnabledTemplate.main+xml"
+	ctWML           = "application/vnd.openxmlformats-officedocument.wordprocessingml."
 )
 
 // Doc is a Word document under construction. The zero value is not usable;
@@ -108,6 +107,12 @@ func (d *Doc) MacroEnabled() *Doc {
 // Template gives the main part the content type of a .dotx file.
 func (d *Doc) Template() *Doc {
 	d.mainType = ctTemplate
+	return d
+}
+
+// MacroEnabledTemplate gives the main part the content type of a .dotm file.
+func (d *Doc) MacroEnabledTemplate() *Doc {
+	d.mainType = ctMacroTemplate
 	return d
 }
 
@@ -251,14 +256,16 @@ func (d *Doc) Document() []byte {
 
 // Bytes returns the finished package. The result is the same on every call.
 func (d *Doc) Bytes() []byte {
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
+	return Zip(d.Entries()...)
+}
+
+// Entries returns the entries of the package in the order they are stored.
+// A test that needs a package that is wrong in some way takes them, changes
+// them and writes them with Zip.
+func (d *Doc) Entries() []Entry {
+	var entries []Entry
 	add := func(name string, data []byte) {
-		w, err := zw.Create(name)
-		if err != nil {
-			panic(err)
-		}
-		w.Write(data)
+		entries = append(entries, Entry{Name: name, Data: data})
 	}
 
 	var ct strings.Builder
@@ -298,10 +305,14 @@ func (d *Doc) Bytes() []byte {
 	for _, p := range d.parts {
 		add(p.name, p.data)
 	}
-	if err := zw.Close(); err != nil {
-		panic(err)
-	}
-	return buf.Bytes()
+	return entries
+}
+
+// MainType sets the content type of the main part, for packages that are
+// some other kind of file or that say nothing useful.
+func (d *Doc) MainType(contentType string) *Doc {
+	d.mainType = contentType
+	return d
 }
 
 const xmlDecl = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` + "\n"
@@ -334,6 +345,9 @@ func (d *Doc) wmlPart(file, element, kind, inner string) *Doc {
 
 func (d *Doc) relType(kind string) string {
 	if d.strict {
+		if kind == "extended-properties" {
+			kind = "extendedProperties"
+		}
 		return "http://purl.oclc.org/ooxml/officeDocument/relationships/" + kind
 	}
 	return nsR + "/" + kind
