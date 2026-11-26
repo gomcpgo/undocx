@@ -20,7 +20,12 @@ internal/opc: the zip archive as a package: parts, content types, relationships
   │ internal/xmlstream: tokens from a part, with limits, one namespace dialect,
   │                     and mc:AlternateContent resolved
   ▼
-undocx: Open, Info, Warnings
+internal/wml: the styles, read whole
+internal/body: the main part, read as a stream into blocks
+  ▼
+internal/model: blocks and inline runs, and their Markdown and plain text
+  ▼
+undocx: Open, Info, Blocks, Markdown, Text, Warnings
 ```
 
 - `opc` and `xmlstream` know nothing about Word, so readers for `.xlsx` and `.pptx` can use them unchanged.
@@ -70,9 +75,64 @@ Defaults were set against a corpus of 965 real documents: the largest part is 18
 - **Lenient values.** A revision that is not a number, or a date in no recognised form, is left at zero and is not an error. A time without a zone is taken as UTC.
 - **Flags that need a pass over the document are not in `Info`.** Whether a document has tracked changes cannot be read from its properties. That will come with the body reader.
 
+### Reading the body
+
+- **One pass, a paragraph at a time.** The main part is read as a stream and each block is handed on when it is complete. What carries over between paragraphs is small: the open fields, the headings the text stands under, and a paragraph waiting to be joined to the next. Converting 50,000 paragraphs takes ten times as long as 5,000, and the largest corpus document (18 MiB of XML) peaks at 13 MB of memory.
+- **The block loop does not call itself.** Table rows and cells, content controls and custom XML wrappers are passed through, and every paragraph found is a block, however deep. Only a text box nests a call, and the XML depth limit bounds that.
+- **Text comes only from `w:t` in a run. Every wrapper is passed through.** `w:ins`, `w:moveTo`, `w:smartTag`, `w:customXml`, `w:dir`, `w:bdo`, `w:sdt`, `w:fldSimple` and anything a later version of Word adds are descended into without being named. A reader that lists the wrappers it knows loses text in the ones it forgot; this one cannot.
+- **Tables are flattened for now.** Their paragraphs come out in reading order. Structure comes with the tables milestone.
+
+### Tracked changes
+
+The document is read as it looks with every change accepted.
+
+- **Deleted and moved-away text is read past, not skipped.** `w:del` and `w:moveFrom` contribute no text, but a field may begin or end inside them, and skipping the element would leave the count of open fields wrong and hide everything after it.
+- **Moved text appears once,** where it was moved to. `w:moveFrom` holds ordinary `w:t` runs, which is why simple readers print it twice.
+- **A deleted paragraph mark joins two paragraphs.** The joined paragraph takes the style of the second, whose mark survives. A deleted table row is left out.
+- **The old formatting inside `w:rPrChange` and `w:pPrChange` is never read as the formatting.**
+
+### Fields
+
+- **A stack of open fields, kept across paragraphs.** Between `begin` and `separate` is the instruction; text there is not document text, and that includes the results of fields nested in the instruction. Between `separate` and `end` is the result that the last program to save the file left, which is what Word shows.
+- **A table of contents is a field** whose result repeats the headings. It is left out unless asked for.
+- **`HYPERLINK` fields and `w:hyperlink` elements become links** when the address is a web, mail or telephone address. Anything else, such as a script or a file path, stays as plain text and is counted in a warning, because the Markdown may be shown by a program that follows links.
+- **Nesting is capped at 64.** Fields begun beyond that are counted, so their ends do not close the wrong field.
+
+### Styles and formatting
+
+- **Headings by outline level, then by name.** The level set on the paragraph wins, then the one set on its style or a style it is based on, then a style named `heading 1` to `heading 9`. The style ID is never used: it is translated, and anyone can give a body style the ID `Heading1`.
+- **Toggle properties follow the standard.** Direct formatting states bold outright. A paragraph style and a character style that both say bold cancel out, which is why Strong inside a bold heading is not bold in Word. Within a chain of `basedOn`, the nearest style that speaks wins.
+- **Right-to-left text takes bold and italic from `w:bCs` and `w:iCs`.**
+- **Code is a monospace font or a style named for code.** The list of fonts is by name; theme fonts are not resolved.
+- **Text formatted as all capitals stays as typed.** Word shows it in capitals, but the stored text is what copying it out of Word gives, and it keeps the case of names. pandoc capitalises it when the formatting is direct; agreeing with it there lowered agreement elsewhere, and the gain was not worth the rule.
+- **Hidden text is left out**, whether hidden directly or through a style.
+- **Unfilled content controls are left out, with a warning that counts them.** Their content is a prompt such as "Click here to enter text". `ReadOptions.Placeholders` keeps them, which a template needs: in the corpus, some templates are nothing but prompts.
+
+### Symbols
+
+- **Symbol-font text is a glyph position, not a character.** `a` in Symbol is alpha. Both `w:sym` and ordinary runs set in a symbol font are mapped, from the position itself or from its private-use twin at F000 plus the position.
+- **Symbol uses the Unicode Consortium's table** (see `NOTICE`). **Wingdings uses a short table of our own** for the glyphs documents use most: bullets, arrows, check marks. It was written from knowledge of the font and has not been checked against a published table. Everything else in Wingdings, and all of Webdings and Wingdings 2 and 3, comes out as U+FFFD with a warning that counts them.
+
+### Text clean-up
+
+- **A soft hyphen is dropped; a non-breaking hyphen is a hyphen; a non-breaking space is a space.** A search for "well-known" should find the text whichever hyphen the author typed.
+- **Tabs and line ends typed into the XML are spaces.** The tabs and line breaks of the document have elements of their own.
+
+### Markdown
+
+- **Marks hug the text.** `**bold **text` is not bold in Markdown, so white space at the edge of a formatted run is written outside its marks. Runs with the same formatting are joined first, so the way Word split a sentence does not show.
+- **Escaping is minimal.** A character is escaped only where Markdown would read it as markup: an underscore at the edge of a word but not inside `snake_case`, `#` or `1.` at the start of a line but not elsewhere. Escaping every punctuation mark is always safe for a renderer and worse for a reader and for search.
+- **A line break is a backslash at the end of the line,** which is visible in the source, unlike two trailing spaces.
+- **Headings do not mark bold,** since a heading is bold already.
+
+### Damage
+
+- **Damage part of the way through ends the reading without an error.** The blocks before it are kept, including the paragraph that was cut, and a warning says where it stopped. Damage before any text is `ErrDamaged`. A limit or a cancelled context is always an error.
+
 ## Testing
 
 - **Fixtures** (`internal/docxtest/fixtures.go`): one document per feature, with the text Word displays and checks on what a reader must and must not output. Every fixture ends with a paragraph after its last table, as Word writes it: LibreOffice hangs on a body that ends with a table.
 - **Hostile archives** are built with `docxtest.Zip`, which takes entries as given: repeated names, leading slashes, backslashes, an encryption flag. `docxtest.CompoundFile` writes the container of the older formats, and was checked with two independent readers.
-- **Fuzz targets:** `FuzzDetect` (sniffing and the compound-file directory), `FuzzReader` (the XML reader), `FuzzOpen` in `opc` and `FuzzOpen` on the public API.
+- **`TestFixtures` runs every fixture through `Text` and `Markdown`** and applies its checks. Fixtures whose features are not built yet are listed with the reason; one of them passing is a failure too, so the list cannot go stale.
+- **Fuzz targets:** `FuzzDetect` (sniffing and the compound-file directory), `FuzzReader` (the XML reader), `FuzzOpen` in `opc` and `FuzzOpen` on the public API, and `FuzzBody` (a main part and a styles part of arbitrary bytes inside a sound package).
 - **Not in this repository:** a corpus of documents written by Word and other programs, a harness that compares against other converters, and a mutation sweep that damages every corpus file. They are run before each release, and their documents are never committed.

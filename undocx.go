@@ -11,6 +11,7 @@ import (
 	"github.com/gomcpgo/undocx/internal/diag"
 	"github.com/gomcpgo/undocx/internal/opc"
 	"github.com/gomcpgo/undocx/internal/sniff"
+	"github.com/gomcpgo/undocx/internal/wml"
 	"github.com/gomcpgo/undocx/internal/xmlstream"
 )
 
@@ -86,6 +87,8 @@ type Document struct {
 	main   string             // the name of the main document part
 	rels   []opc.Relationship // the relationships of the package
 	info   Info
+	styles *wml.Styles       // nil until the body is first read
+	links  map[string]string // external hyperlink targets by relationship ID
 }
 
 // OpenFile opens the document at path. Close the Document to release the

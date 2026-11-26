@@ -335,3 +335,40 @@ func FuzzReader(f *testing.F) {
 		}
 	})
 }
+
+// Skipping out of a branch of mc:AlternateContent leaves the reader in step:
+// what follows is read as usual, and a later alternate is still resolved.
+func TestSkipToAcrossAlternateContent(t *testing.T) {
+	const input = `<w:body xmlns:w="` + nsW + `" xmlns:mc="` + NSMarkupCompatibility + `" xmlns:wps="` + nsWPS + `">` +
+		`<w:row><mc:AlternateContent><mc:Choice Requires="wps"><w:inner><w:deep/></w:inner></mc:Choice><mc:Fallback><w:old/></mc:Fallback></mc:AlternateContent><w:lost/></w:row>` +
+		`<mc:AlternateContent><mc:Choice Requires="wps"><w:kept/></mc:Choice><mc:Fallback><w:old/></mc:Fallback></mc:AlternateContent></w:body>`
+	r := New(context.Background(), strings.NewReader(input), Options{Understood: func(ns string) bool { return ns == nsWPS }})
+	var sb strings.Builder
+	row := 0
+	for {
+		tok, err := r.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch el := tok.(type) {
+		case xml.StartElement:
+			sb.WriteString("<" + el.Name.Local + ">")
+			if el.Name.Local == "row" {
+				row = r.Depth()
+			}
+			if el.Name.Local == "deep" {
+				if err := r.SkipTo(row); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case xml.EndElement:
+			sb.WriteString("</" + el.Name.Local + ">")
+		}
+	}
+	if got, want := sb.String(), "<body><row><inner><deep><kept></kept></body>"; got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}

@@ -141,6 +141,12 @@ func (r *Reader) Skip() error {
 	return r.skipFrom(r.depth)
 }
 
+// SkipTo reads to the end of the enclosing element at the given depth: the
+// one for which Depth returned that value when its start tag was read.
+func (r *Reader) SkipTo(depth int) error {
+	return r.skipFrom(depth)
+}
+
 // skipFrom reads until the element at the given depth has ended.
 func (r *Reader) skipFrom(depth int) error {
 	for r.depth >= depth {
@@ -150,6 +156,13 @@ func (r *Reader) skipFrom(depth int) error {
 			}
 			return err
 		}
+	}
+	// Elements that were open and not passed on, and are now closed.
+	for n := len(r.hidden); n > 0 && r.hidden[n-1] > r.depth; n = len(r.hidden) {
+		r.hidden = r.hidden[:n-1]
+	}
+	for n := len(r.alternates); n > 0 && r.alternates[n-1].depth > r.depth; n = len(r.alternates) {
+		r.alternates = r.alternates[:n-1]
 	}
 	return nil
 }

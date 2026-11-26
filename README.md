@@ -2,7 +2,7 @@
 
 A pure-Go package that reads Word documents (`.docx`) and returns their content as Markdown, plain text or a structured model, for language models and search indexes. It is the companion of [unpdf](https://github.com/gomcpgo/unpdf) and the reverse of [htmltodocx](https://github.com/gomcpgo/htmltodocx).
 
-**Status: early. The package opens documents and reads their metadata; it does not extract text yet.**
+**Status: early. The package reads text, headings, formatting, links and fields. Lists do not have their numbers yet and tables come out as their paragraphs; see "Not yet" below.**
 
 What works today:
 
@@ -10,6 +10,12 @@ What works today:
 - Opening the package safely: limits on the number and size of parts, on compression ratio, and on XML depth and token size.
 - Document properties: title, author, dates, revision, and the page and word counts the file records.
 - Transitional and Strict documents alike.
+- The text as Markdown or plain text, read as Word shows it with tracked changes accepted: deleted and hidden text left out, moved text once, text boxes once.
+- Headings by outline level and built-in style name, so documents in any language and with renamed styles work.
+- Bold, italic, strike-through, superscript, subscript and code; links; the cached results of fields.
+- Each block with the headings it stands under, for citations and for cutting a document into chunks.
+
+Not yet: list labels and numbering, tables as tables, footnotes and endnotes, comments, form fields, images, equations.
 
 ```go
 doc, err := undocx.OpenFile(ctx, "contract.docx", undocx.Options{})
@@ -27,6 +33,15 @@ defer doc.Close()
 
 info := doc.Info()
 fmt.Println(info.Title, info.Author, info.Modified)
+
+md, err := doc.Markdown(ctx, undocx.MarkdownOptions{})
+
+for block, err := range doc.Blocks(ctx, undocx.ReadOptions{}) {
+	if err != nil {
+		return err
+	}
+	fmt.Println(block.Path, block.Text()) // [Terms Payment] Invoices are due in 30 days.
+}
 ```
 
 ```
@@ -35,6 +50,8 @@ Format:           docx
 Title:            Supply Agreement
 Author:           Ann Lee
 Modified:         2026-02-03T17:30:00Z
+$ go run ./cmd/undocx markdown contract.docx
+$ go run ./cmd/undocx text contract.docx
 ```
 
 ## Goals

@@ -1,9 +1,13 @@
 // Command undocx inspects Word documents.
 //
 //	undocx info [-json] file.docx
+//	undocx markdown [-toc] [-placeholders] [-max BYTES] [-warnings] file.docx
+//	undocx text [-toc] [-placeholders] [-warnings] file.docx
+//	undocx blocks [-toc] file.docx
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,6 +31,12 @@ func main() {
 	switch os.Args[1] {
 	case "info":
 		err = info(ctx, os.Args[2:])
+	case "markdown":
+		err = convert(ctx, os.Args[2:], true)
+	case "text":
+		err = convert(ctx, os.Args[2:], false)
+	case "blocks":
+		err = blocks(ctx, os.Args[2:])
 	default:
 		usage()
 	}
@@ -44,6 +54,9 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: undocx info [-json] file.docx")
+	fmt.Fprintln(os.Stderr, "       undocx markdown [-toc] [-placeholders] [-max BYTES] [-warnings] file.docx")
+	fmt.Fprintln(os.Stderr, "       undocx text [-toc] [-placeholders] [-warnings] file.docx")
+	fmt.Fprintln(os.Stderr, "       undocx blocks [-toc] file.docx")
 	os.Exit(64)
 }
 
@@ -117,6 +130,70 @@ func info(ctx context.Context, args []string) error {
 	row("Paragraphs", number(i.Paragraphs))
 	for _, w := range out.Warnings {
 		fmt.Printf("warning [%s]: %s\n", w.Code, w.Message)
+	}
+	return nil
+}
+
+// convert writes the document to standard output as Markdown or plain text.
+func convert(ctx context.Context, args []string, markdown bool) error {
+	fs := flag.NewFlagSet("convert", flag.ExitOnError)
+	toc := fs.Bool("toc", false, "keep the generated table of contents")
+	placeholders := fs.Bool("placeholders", false, "keep the prompts of content controls that are not filled in")
+	maxBytes := fs.Int("max", 0, "stop after about this many bytes (Markdown only)")
+	warnings := fs.Bool("warnings", false, "print warnings to standard error")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		usage()
+	}
+	doc, err := undocx.OpenFile(ctx, fs.Arg(0), undocx.Options{})
+	if err != nil {
+		return err
+	}
+	defer doc.Close()
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+	read := undocx.ReadOptions{TOC: *toc, Placeholders: *placeholders}
+	if markdown {
+		err = doc.WriteMarkdown(ctx, out, undocx.MarkdownOptions{ReadOptions: read, MaxBytes: *maxBytes})
+	} else {
+		err = doc.WriteText(ctx, out, read)
+	}
+	if *warnings {
+		for _, w := range doc.Warnings() {
+			fmt.Fprintf(os.Stderr, "warning [%s]: %s\n", w.Code, w.Message)
+		}
+	}
+	return err
+}
+
+// blocks prints one JSON object per block: its kind, level, style, heading
+// path and text.
+func blocks(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("blocks", flag.ExitOnError)
+	toc := fs.Bool("toc", false, "keep the generated table of contents")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		usage()
+	}
+	doc, err := undocx.OpenFile(ctx, fs.Arg(0), undocx.Options{})
+	if err != nil {
+		return err
+	}
+	defer doc.Close()
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+	enc := json.NewEncoder(out)
+	for b, err := range doc.Blocks(ctx, undocx.ReadOptions{TOC: *toc}) {
+		if err != nil {
+			return err
+		}
+		enc.Encode(struct {
+			Kind  string   `json:"kind"`
+			Level int      `json:"level,omitempty"`
+			Style string   `json:"style,omitempty"`
+			Path  []string `json:"path,omitempty"`
+			Text  string   `json:"text"`
+		}{b.Kind.String(), b.Level, b.Style, b.Path, b.Text()})
 	}
 	return nil
 }
