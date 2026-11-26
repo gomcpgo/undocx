@@ -190,10 +190,11 @@ func blocks(ctx context.Context, args []string) error {
 		enc.Encode(struct {
 			Kind  string   `json:"kind"`
 			Level int      `json:"level,omitempty"`
+			Label string   `json:"label,omitempty"`
 			Style string   `json:"style,omitempty"`
 			Path  []string `json:"path,omitempty"`
 			Text  string   `json:"text"`
-		}{b.Kind.String(), b.Level, b.Style, b.Path, b.Text()})
+		}{b.Kind.String(), b.Level, b.Label, b.Style, b.Path, undocx.Block{Inlines: b.Inlines}.Text()})
 	}
 	return nil
 }

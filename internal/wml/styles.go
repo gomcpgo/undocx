@@ -90,6 +90,20 @@ type ParaProps struct {
 	// DropCap reports that the paragraph is a drop cap, which belongs to
 	// the start of the next paragraph.
 	DropCap bool
+	// Num is the numbering the paragraph states (w:numPr).
+	Num NumPr
+	// SectionEnd reports that a section of the document ends with this
+	// paragraph (a w:sectPr in its properties).
+	SectionEnd bool
+}
+
+// NumPr is what a w:numPr element states. A paragraph or style that leaves
+// a value unsaid inherits it.
+type NumPr struct {
+	ID       int // w:numId: the numbering instance; 0 switches numbering off
+	Level    int // w:ilvl: the level, from 0
+	HasID    bool
+	HasLevel bool
 }
 
 // ReadRunProps reads a w:rPr element whose start tag has just been read.
@@ -166,6 +180,7 @@ func ReadRunProps(x *xmlstream.Reader) (RunProps, error) {
 func ReadParaProps(x *xmlstream.Reader) (ParaProps, error) {
 	var p ParaProps
 	depth := x.Depth()
+	parent := "" // the child of w:pPr being looked into
 	for {
 		tok, err := x.Token()
 		if err != nil {
@@ -184,6 +199,7 @@ func ReadParaProps(x *xmlstream.Reader) (ParaProps, error) {
 				continue
 			}
 			if x.Depth() == depth+1 {
+				parent = el.Name.Local
 				switch el.Name.Local {
 				case "pStyle":
 					p.Style = Val(el)
@@ -195,11 +211,24 @@ func ReadParaProps(x *xmlstream.Reader) (ParaProps, error) {
 					if d := Attr(el, "dropCap"); d == "drop" || d == "margin" {
 						p.DropCap = true
 					}
-				case "rPr":
-					continue // look inside for a deleted mark
+				case "sectPr":
+					p.SectionEnd = true
+				case "rPr", "numPr":
+					continue // look inside for a deleted mark, or the numbering
 				}
-			} else if x.Depth() == depth+2 && el.Name.Local == "del" {
-				p.DeletedMark = true
+			} else if x.Depth() == depth+2 {
+				switch el.Name.Local {
+				case "del":
+					p.DeletedMark = p.DeletedMark || parent == "rPr"
+				case "numId":
+					if n, ok := number(Val(el)); ok && parent == "numPr" {
+						p.Num.ID, p.Num.HasID = n, true
+					}
+				case "ilvl":
+					if n, ok := number(Val(el)); ok && parent == "numPr" {
+						p.Num.Level, p.Num.HasLevel = min(n, 8), true
+					}
+				}
 			}
 			if err := x.Skip(); err != nil {
 				return p, err
@@ -207,6 +236,22 @@ func ReadParaProps(x *xmlstream.Reader) (ParaProps, error) {
 		}
 	}
 }
+
+// number reads a non-negative whole number. Values too large to mean
+// anything are capped rather than refused.
+func number(s string) (int, bool) {
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange && !strings.HasPrefix(strings.TrimSpace(s), "-") {
+			return maxNumber, true
+		}
+		return 0, false
+	}
+	return int(min(max(n, 0), maxNumber)), n >= 0
+}
+
+// maxNumber is the largest number Word shows in a list label.
+const maxNumber = 2147483647
 
 func unexpectedEOF(err error) error {
 	if err == io.EOF {
@@ -470,4 +515,26 @@ func Monospace(font string) bool {
 		return true
 	}
 	return strings.HasSuffix(f, " mono") || strings.Contains(f, " mono ") || strings.HasSuffix(f, "mono") && len(f) > 4
+}
+
+// NumPr returns the numbering a style gives its paragraphs: the nearest
+// numbering instance and level stated along its chain of w:basedOn.
+func (s *Styles) NumPr(id string) NumPr {
+	var n NumPr
+	s.chain(id, func(c *Style) bool {
+		if !n.HasID && c.Para.Num.HasID {
+			n.ID, n.HasID = c.Para.Num.ID, true
+		}
+		if !n.HasLevel && c.Para.Num.HasLevel {
+			n.Level, n.HasLevel = c.Para.Num.Level, true
+		}
+		return !n.HasID || !n.HasLevel
+	})
+	return n
+}
+
+// Chain calls f with the ID of a style and of each style it is based on,
+// nearest first, until f returns false.
+func (s *Styles) Chain(id string, f func(id string) bool) {
+	s.chain(id, func(c *Style) bool { return f(c.ID) })
 }

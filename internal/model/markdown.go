@@ -6,9 +6,12 @@ import (
 	"unicode/utf8"
 )
 
-// Text returns the text of the block without formatting. A line break
-// inside the block is a newline.
+// Text returns the text of the block without formatting, with its label in
+// front. A line break inside the block is a newline.
 func (b Block) Text() string {
+	if b.Label != "" {
+		return b.Label + " " + PlainText(b.Inlines)
+	}
 	return PlainText(b.Inlines)
 }
 
@@ -18,20 +21,38 @@ func (b Block) Text() string {
 // title of the document with one. Bold, italic and struck-out text use
 // Markdown marks; superscript and subscript use the HTML tags sup and sub;
 // text in a monospace font is a code span.
+//
+// A list item is written as a bullet or numbered item when Markdown has
+// the syntax for its label (see LabelKind), and otherwise as a paragraph
+// that starts with its label. A block on its own does not know its place
+// in a list, so it is not indented; MarkdownWriter nests items.
 func (b Block) Markdown() string {
 	switch b.Kind {
 	case Heading:
-		return strings.Repeat("#", min(max(b.Level, 1), 6)) + " " + headingText(b.Inlines)
+		return strings.Repeat("#", min(max(b.Level, 1), 6)) + " " + b.headingText()
 	case Title:
-		return "# " + headingText(b.Inlines)
+		return "# " + b.headingText()
+	case ListItem:
+		switch {
+		case b.LabelKind == LabelBullet:
+			return "- " + inlines(b.Inlines, false, true)
+		case b.numberMarker():
+			return b.Label + " " + inlines(b.Inlines, false, true)
+		}
 	}
-	return inlines(b.Inlines, false)
+	if b.Label != "" {
+		return escape(b.Label, true) + " " + inlines(b.Inlines, false, false)
+	}
+	return inlines(b.Inlines, false, true)
 }
 
 // headingText renders the content of a heading, which is one line. A
 // heading is bold already, so bold is not marked in it.
-func headingText(in []Inline) string {
-	s := inlines(in, true)
+func (b Block) headingText() string {
+	s := inlines(b.Inlines, true, b.Label == "")
+	if b.Label != "" {
+		s = escape(b.Label, false) + " " + s
+	}
 	if strings.HasSuffix(s, "#") && !strings.HasSuffix(s, `\#`) {
 		// A row of # at the end of a heading line is a closing sequence.
 		s = s[:len(s)-1] + `\#`
@@ -107,8 +128,9 @@ func segments(in []Inline, heading bool) []segment {
 	return segs
 }
 
-// inlines renders the content of a block.
-func inlines(in []Inline, heading bool) string {
+// inlines renders the content of a block. start says that the content
+// begins a line, where a few more characters are markup.
+func inlines(in []Inline, heading, start bool) string {
 	segs := segments(in, heading)
 	var sb strings.Builder
 	lineStart := 0 // where the current line began in sb
@@ -127,7 +149,7 @@ func inlines(in []Inline, heading bool) string {
 		}
 		run := segs[i:j]
 		if segs[i].link == "" {
-			sb.WriteString(formatted(run, sb.Len() == lineStart))
+			sb.WriteString(formatted(run, sb.Len() == lineStart && (start || lineStart > 0)))
 		} else if text := formatted(run, false); strings.TrimSpace(text) != "" {
 			sb.WriteString("[" + text + "](" + destination(segs[i].link) + ")")
 		}

@@ -20,8 +20,9 @@ internal/opc: the zip archive as a package: parts, content types, relationships
   │ internal/xmlstream: tokens from a part, with limits, one namespace dialect,
   │                     and mc:AlternateContent resolved
   ▼
-internal/wml: the styles, read whole
-internal/body: the main part, read as a stream into blocks
+internal/wml: the styles and the list definitions, read whole
+internal/body: the main part, read as a stream into blocks, with the list
+               counters kept as it goes (internal/numfmt writes the numbers)
   ▼
 internal/model: blocks and inline runs, and their Markdown and plain text
   ▼
@@ -82,6 +83,43 @@ Defaults were set against a corpus of 965 real documents: the largest part is 18
 - **Text comes only from `w:t` in a run. Every wrapper is passed through.** `w:ins`, `w:moveTo`, `w:smartTag`, `w:customXml`, `w:dir`, `w:bdo`, `w:sdt`, `w:fldSimple` and anything a later version of Word adds are descended into without being named. A reader that lists the wrappers it knows loses text in the ones it forgot; this one cannot.
 - **Tables are flattened for now.** Their paragraphs come out in reading order. Structure comes with the tables milestone.
 
+### Lists and numbering
+
+A list label is worked out the way Word works it out, so that "see clause 4.2" in the text still points somewhere. The standard gives the data but not the counting; the rules below come from the standard, Microsoft's notes on Word ([MS-OI29500] 2.1.1690 and the 17.9 notes, [MS-DOCX] 2.4), and documents built for the purpose and run through LibreOffice. Where those disagree, the choice and the reason are given.
+
+- **Counters belong to the list definition** (`w:abstractNum`), not to the numbering instance (`w:num`) a paragraph names. Two instances of one definition count on from each other. LibreOffice numbers them so, and it is why Word's "continue numbering" works across instances.
+- **A `w:startOverride` applies once,** the first time a paragraph uses its instance. After that the instance counts on, and other instances of the same definition count on from the restarted value. LibreOffice agrees.
+- **A level above the item that has no number yet takes its start value, and counts as used.** A list that opens at its second level reads `1.1`, and the next first-level item is `2`. LibreOffice agrees.
+- **Every paragraph is counted, including an empty one.** Word shows the label of an empty numbered paragraph. The empty paragraph itself is still left out of the output.
+- **`w:lvlRestart` follows Microsoft's note:** a level restarts when the level it names or any higher one is used, and never with the value 0. Left out, a level restarts when any higher level is used. LibreOffice ignores the element; the fixture `list-restart-levels` records the difference.
+- **An override that replaces a level (`w:lvlOverride/w:lvl`) changes its format, not its count.** Word ignores the `w:start` and `w:lvlRestart` inside it (Microsoft's notes on 17.9.10 and 17.9.25), and LibreOffice agrees.
+- **A `w:start` left out is 0,** as the standard says. LibreOffice agrees.
+- **The level of a paragraph numbered through its style** comes from the `w:pStyle` that ties a level of the list to that style, as the standard says (17.9.23), then from the style's own `w:ilvl`. A level stated on the paragraph wins over both. LibreOffice ignores the tie; Word writes the same level in both places, so documents rarely tell them apart.
+- **A pattern that refers to a deeper level shows nothing at all** (Microsoft's note on 17.9.11). A level that refers to a bullet level writes nothing for it: `%1.%2.%3` over a bullet at the second level reads `1..1`. A document written to test this shows the second as Word's result.
+- **`w:isLgl` writes every number of the label in decimal, its own level's included** (Microsoft's note on 17.9.4). A level whose format is `none` still writes nothing.
+- **A paragraph at a level the list does not define has no label.** LibreOffice makes up a decimal label; what Word does is not known.
+- **`w15:restartNumberingAfterBreak`** ([MS-DOCX] 2.2.10) restarts a list after each section break.
+- **A paragraph whose mark is a tracked deletion takes no number,** since with the change accepted it is part of the next paragraph.
+
+Number formats:
+
+- **Every format the corpus uses is written,** and the common ones besides: decimal with and without a zero, Roman, letters (`27` is `AA`, as Word repeats the letter), ordinals and English words, Chicago symbols, hexadecimal, enclosed and full-width digits, Chinese and Japanese counting, the CJK financial digits, kana and Hangul sequences, Hebrew and Arabic letters, and the zero-padded custom formats of Word 2010 (`001, 002, 003, ...`).
+- **Word's limits are kept:** words stop after 999,999, Chicago symbols after 116, hexadecimal after 65,535, everything after 2,147,483,647. Past them the number is empty.
+- **Formats that repeat a symbol stop at 32 repeats** and fall back to decimal, so that a list starting at a huge number cannot make a huge label. This limit is ours.
+- **`chineseCounting` counts up to 99 and writes larger numbers digit by digit** (`一○○`), and `chineseCountingThousand` counts throughout (`一百`). The names Word gives them in [MS-DOCX] 2.4 show this.
+- **A format not supported is written in decimal, with a warning that counts the labels.** These are the Thai, Hindi, Vietnamese and Korean counting formats, Russian letters, and the custom Turkish, Bulgarian and Greek sequences of Word 2010, whose rules are not clear enough from the published notes to write them.
+- **A bullet glyph in a symbol font is mapped like any symbol;** one with no equivalent, and a picture bullet, become `•`.
+
+How a label is written:
+
+- **The label is a field of the block, not part of its inlines.** `Text` and `Markdown` write it in front of the content, and a heading path includes it (`1.2 Payment`), so a citation can name the clause.
+- **A space always follows the label,** whatever the level's `w:suff` says. A label glued to its text (`1.Definitions`) breaks searching for either.
+- **Markdown uses its own list syntax only for a bullet, or for a decimal number of the item's own level followed by `.` or `)`.** Any other label is written as text at the start of the paragraph, escaped where Markdown would read it as markup (`01\.`). The choice is made per item, not per list: Word's default numbered list has `a.` and `i.` at its lower levels, and deciding per list would turn every such list into paragraphs.
+- **An item with a text label stays inside the Markdown item above it.** It is indented to that item's content, so `4.1` written as text sits inside item `4.`, and is not a code block or the end of the list. It nests nothing itself.
+- **Items of one list are on consecutive lines.** A blank line separates them only where Markdown needs one: before an item that is not a bullet and does not start at 1, since only those may begin straight after a line of text.
+- **Markdown renumbers an ordered list from its first item,** so where a list restarts straight after another (`3.` then `1.`), an empty HTML comment keeps the two apart. Without it the second list would read `4.`.
+- **Plain text indents a list item by two spaces for each level below the first,** which is the only sign of nesting a bullet has.
+
 ### Tracked changes
 
 The document is read as it looks with every change accepted.
@@ -134,5 +172,5 @@ The document is read as it looks with every change accepted.
 - **Fixtures** (`internal/docxtest/fixtures.go`): one document per feature, with the text Word displays and checks on what a reader must and must not output. Every fixture ends with a paragraph after its last table, as Word writes it: LibreOffice hangs on a body that ends with a table.
 - **Hostile archives** are built with `docxtest.Zip`, which takes entries as given: repeated names, leading slashes, backslashes, an encryption flag. `docxtest.CompoundFile` writes the container of the older formats, and was checked with two independent readers.
 - **`TestFixtures` runs every fixture through `Text` and `Markdown`** and applies its checks. Fixtures whose features are not built yet are listed with the reason; one of them passing is a failure too, so the list cannot go stale.
-- **Fuzz targets:** `FuzzDetect` (sniffing and the compound-file directory), `FuzzReader` (the XML reader), `FuzzOpen` in `opc` and `FuzzOpen` on the public API, and `FuzzBody` (a main part and a styles part of arbitrary bytes inside a sound package).
-- **Not in this repository:** a corpus of documents written by Word and other programs, a harness that compares against other converters, and a mutation sweep that damages every corpus file. They are run before each release, and their documents are never committed.
+- **Fuzz targets:** `FuzzDetect` (sniffing and the compound-file directory), `FuzzReader` (the XML reader), `FuzzOpen` in `opc` and `FuzzOpen` on the public API, `FuzzBody` (a main part, a styles part and a numbering part of arbitrary bytes inside a sound package), and `FuzzFormat` (the number formats).
+- **Not in this repository:** a corpus of documents written by Word and other programs, a harness that compares against other converters, a check of list labels against LibreOffice's, and a mutation sweep that damages every corpus file. They are run before each release, and their documents are never committed.

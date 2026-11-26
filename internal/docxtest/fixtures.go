@@ -243,6 +243,44 @@ func Fixtures() []Fixture {
 			Must: []string{"2. Second clause", "3. Third clause"},
 		},
 		{
+			Name:  "list-instances",
+			About: "three numbering instances of one list: two count on from each other, and one restarts the count the first time it is used",
+			Doc: func() *Doc {
+				return New().Numbering(AbstractNum(0, Lvl(0, 1, "decimal", "%1.", ""))+
+					Num(1, 0, "")+Num(2, 0, "")+Num(3, 0, StartOverride(0, 1))).
+					Body(PNum(1, 0, "Alpha"), PNum(1, 0, "Beta"), P("Text."), PNum(2, 0, "Gamma"),
+						PNum(3, 0, "Delta"), PNum(3, 0, "Epsilon"), PNum(1, 0, "Zeta"), PNum(3, 0, "Eta"))
+			},
+			Text: lines("1. Alpha", "2. Beta", "Text.", "3. Gamma", "1. Delta", "2. Epsilon", "3. Zeta", "4. Eta"),
+			Must: []string{"3. Gamma", "1. Delta", "2. Epsilon", "3. Zeta", "4. Eta"},
+		},
+		{
+			Name:  "list-levels",
+			About: "a list that starts below its first level, an item that skips a level, and an empty item that still takes its number",
+			Doc: func() *Doc {
+				return New().Numbering(AbstractNum(0,
+					Lvl(0, 1, "decimal", "%1.", ""), Lvl(1, 1, "decimal", "%1.%2.", ""), Lvl(2, 1, "decimal", "%1.%2.%3.", ""))+Num(1, 0, "")).
+					Body(PNum(1, 1, "Starts at level two"), PNum(1, 0, "First level"), PNum(1, 2, "Skips a level"),
+						PNum(1, 0, ""), PNum(1, 0, "After the empty item"))
+			},
+			Text: lines("1.1. Starts at level two", "2. First level", "2.1.1. Skips a level", "3.", "4. After the empty item"),
+			Must: []string{"1.1. Starts at level two", "2. First level", "2.1.1. Skips a level", "4. After the empty item"},
+		},
+		{
+			Name:  "list-restart-levels",
+			About: "w:lvlRestart: a level that never restarts, and one that restarts only after the first level",
+			Doc: func() *Doc {
+				return New().Numbering(AbstractNum(0,
+					Lvl(0, 1, "decimal", "%1.", ""),
+					Lvl(1, 1, "lowerLetter", "%2)", `<w:lvlRestart w:val="0"/>`),
+					Lvl(2, 1, "lowerRoman", "%3]", `<w:lvlRestart w:val="1"/>`))+Num(1, 0, "")).
+					Body(PNum(1, 0, "One"), PNum(1, 1, "Two"), PNum(1, 2, "Three"), PNum(1, 1, "Four"),
+						PNum(1, 2, "Five"), PNum(1, 0, "Six"), PNum(1, 1, "Seven"), PNum(1, 2, "Eight"))
+			},
+			Text: lines("1. One", "a) Two", "i] Three", "b) Four", "ii] Five", "2. Six", "c) Seven", "i] Eight"),
+			Must: []string{"b) Four", "ii] Five", "c) Seven", "i] Eight"},
+		},
+		{
 			Name:  "table-simple",
 			About: "a plain table with a header row",
 			Doc: func() *Doc {

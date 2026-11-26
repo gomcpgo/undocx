@@ -12,8 +12,8 @@ import (
 	"github.com/gomcpgo/undocx/internal/wml"
 )
 
-// Block is one paragraph-level piece of a document: a paragraph, a heading
-// or the title. Its Text and Markdown methods render it alone, which is
+// Block is one paragraph-level piece of a document: a paragraph, a heading,
+// a list item or the title. Its Text and Markdown methods render it alone, which is
 // what a caller needs to cut a document into chunks on block boundaries.
 type Block = model.Block
 
@@ -27,6 +27,9 @@ type Inline = model.Inline
 // InlineKind says what an Inline is.
 type InlineKind = model.InlineKind
 
+// LabelKind says how Markdown writes the label of a list item.
+type LabelKind = model.LabelKind
+
 const (
 	// Paragraph is body text, and anything not recognised as something
 	// else.
@@ -35,6 +38,20 @@ const (
 	Heading = model.Heading
 	// Title is the title of the document: a paragraph in the Title style.
 	Title = model.Title
+	// ListItem is a paragraph of a numbered or bulleted list. Block.Level
+	// is its level in the list, from 1, and Block.Label its number or
+	// bullet.
+	ListItem = model.ListItem
+
+	// LabelText is a label Markdown has no list syntax for, such as "4.2",
+	// "(b)" or "Article VII". It is written as text at the start of the
+	// paragraph.
+	LabelText = model.LabelText
+	// LabelBullet is a bullet. Markdown writes the item with "-".
+	LabelBullet = model.LabelBullet
+	// LabelNumber is a plain number followed by a full stop or a
+	// parenthesis, which Markdown writes as an item of an ordered list.
+	LabelNumber = model.LabelNumber
 
 	// Text is a run of text.
 	Text = model.Text
@@ -65,6 +82,13 @@ const (
 	// WarnEmbedded: the document embeds content in another format, which
 	// was not read.
 	WarnEmbedded = body.WarnAltChunk
+	// WarnNumbering: the numbering part is missing or malformed, or
+	// paragraphs refer to numbering it does not define. Those paragraphs
+	// are read without their labels.
+	WarnNumbering = body.WarnNumbering
+	// WarnNumberFormat: list labels use a number format that is not
+	// supported, and their numbers were written in decimal.
+	WarnNumberFormat = body.WarnNumberFormat
 )
 
 // ReadOptions says what of a document to read. The zero value reads the
@@ -95,11 +119,12 @@ type MarkdownOptions struct {
 
 const (
 	relStyles    = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
+	relNumbering = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"
 	relHyperlink = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
 
-// prepare loads what reading the body needs: the styles and the targets of
-// the links. It does so once.
+// prepare loads what reading the body needs: the styles, the list
+// definitions and the targets of the links. It does so once.
 func (d *Document) prepare(ctx context.Context) error {
 	if d.styles != nil {
 		return nil
@@ -112,13 +137,15 @@ func (d *Document) prepare(ctx context.Context) error {
 		d.log.Add(WarnRelationships, "the relationships of %s could not be read in full: %v", d.main, err)
 	}
 	links := map[string]string{}
-	stylesPart := ""
+	stylesPart, numberingPart := "", ""
 	for _, r := range rels {
 		switch {
 		case r.Type == relHyperlink && r.External:
 			links[r.ID] = r.Target
 		case r.Type == relStyles && !r.External && stylesPart == "" && d.pkg.Has(r.Part):
 			stylesPart = r.Part
+		case r.Type == relNumbering && !r.External && numberingPart == "" && d.pkg.Has(r.Part):
+			numberingPart = r.Part
 		}
 	}
 	styles := wml.NoStyles()
@@ -135,7 +162,21 @@ func (d *Document) prepare(ctx context.Context) error {
 			d.log.Add(WarnStyles, "the styles could not be read in full: %v", err)
 		}
 	}
-	d.styles, d.links = styles, links
+	numbering := wml.NoNumbering()
+	if numberingPart != "" {
+		x, c, err := d.pkg.XML(ctx, numberingPart, nil)
+		if err == nil {
+			numbering, err = wml.ReadNumbering(x)
+			c.Close()
+		}
+		if err != nil {
+			if stop(err) {
+				return err
+			}
+			d.log.Add(WarnNumbering, "the numbering could not be read in full, and some list labels may be missing: %v", err)
+		}
+	}
+	d.styles, d.lists, d.links = styles, numbering, links
 	return nil
 }
 
@@ -161,7 +202,7 @@ func (d *Document) Blocks(ctx context.Context, opts ReadOptions) iter.Seq2[Block
 		}
 		defer c.Close()
 		stopped := false
-		n, err := body.Read(x, body.Config{Styles: d.styles, Links: d.links, Log: d.log, TOC: opts.TOC, Placeholders: opts.Placeholders}, func(b model.Block) bool {
+		n, err := body.Read(x, body.Config{Styles: d.styles, Numbering: d.lists, Links: d.links, Log: d.log, TOC: opts.TOC, Placeholders: opts.Placeholders}, func(b model.Block) bool {
 			if !yield(b, nil) {
 				stopped = true
 			}
@@ -179,25 +220,26 @@ func (d *Document) Blocks(ctx context.Context, opts ReadOptions) iter.Seq2[Block
 }
 
 // WriteMarkdown writes the document to w as Markdown, a block at a time.
-// See Block.Markdown for how a block is written.
+// See Block.Markdown for how a block is written. List items are nested, and
+// the items of a list are written on consecutive lines.
 func (d *Document) WriteMarkdown(ctx context.Context, w io.Writer, opts MarkdownOptions) error {
 	written := 0
+	var mw model.MarkdownWriter
 	for b, err := range d.Blocks(ctx, opts.ReadOptions) {
 		if err != nil {
 			return err
 		}
-		md := b.Markdown()
+		md := mw.Block(b)
 		if md == "" {
 			continue
 		}
-		sep := ""
 		if written > 0 {
-			sep = "\n"
+			md = md[1:] // the newline that ends the block before is written already
 		}
-		if opts.MaxBytes > 0 && written+len(sep)+len(md)+1 > opts.MaxBytes {
+		if opts.MaxBytes > 0 && written+len(md)+1 > opts.MaxBytes {
 			if written == 0 {
 				// Not even the first block fits: cut it.
-				md = strings.ToValidUTF8(md[:min(len(md), opts.MaxBytes)], "")
+				md = strings.ToValidUTF8(strings.TrimLeft(md, "\n")[:min(len(md), opts.MaxBytes)], "")
 				if _, err := io.WriteString(w, md+"\n"); err != nil {
 					return err
 				}
@@ -205,7 +247,7 @@ func (d *Document) WriteMarkdown(ctx context.Context, w io.Writer, opts Markdown
 			_, err := io.WriteString(w, "\n<!-- The document continues. This output was cut short at the size asked for. -->\n")
 			return err
 		}
-		n, err := io.WriteString(w, sep+md+"\n")
+		n, err := io.WriteString(w, md+"\n")
 		written += n
 		if err != nil {
 			return err
@@ -223,13 +265,19 @@ func (d *Document) Markdown(ctx context.Context, opts MarkdownOptions) (string, 
 }
 
 // WriteText writes the document to w as plain text, one block per line. A
-// line break inside a paragraph is a line end too.
+// line break inside a paragraph is a line end too. A list item starts with
+// its label, and is indented by two spaces for each level below the first.
 func (d *Document) WriteText(ctx context.Context, w io.Writer, opts ReadOptions) error {
 	for b, err := range d.Blocks(ctx, opts) {
 		if err != nil {
 			return err
 		}
-		if _, err := io.WriteString(w, b.Text()+"\n"); err != nil {
+		line := b.Text()
+		if b.Kind == ListItem && b.Level > 1 {
+			pad := strings.Repeat("  ", b.Level-1)
+			line = pad + strings.ReplaceAll(line, "\n", "\n"+pad)
+		}
+		if _, err := io.WriteString(w, line+"\n"); err != nil {
 			return err
 		}
 	}

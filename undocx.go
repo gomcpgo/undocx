@@ -88,6 +88,7 @@ type Document struct {
 	rels   []opc.Relationship // the relationships of the package
 	info   Info
 	styles *wml.Styles       // nil until the body is first read
+	lists  *wml.Numbering    // the list definitions, read with the styles
 	links  map[string]string // external hyperlink targets by relationship ID
 }
 

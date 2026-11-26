@@ -55,20 +55,13 @@ func failures(f docxtest.Fixture, text, md string) []string {
 // why. Every other fixture must pass all its checks. A fixture listed here
 // that passes is an error too, so the list cannot go stale.
 var later = map[string]string{
-	"headings-numbered":   "list labels",
-	"list-legal":          "list labels",
-	"list-restart":        "list labels",
-	"list-formats":        "list labels",
-	"list-legal-override": "list labels",
-	"list-from-style":     "list labels",
-	"strict":              "list labels",
-	"table-simple":        "tables",
-	"table-merged":        "tables",
-	"notes":               "footnotes and endnotes",
-	"comments":            "comments",
-	"form-fields":         "form fields",
-	"image":               "images",
-	"equation":            "equations",
+	"table-simple": "tables",
+	"table-merged": "tables",
+	"notes":        "footnotes and endnotes",
+	"comments":     "comments",
+	"form-fields":  "form fields",
+	"image":        "images",
+	"equation":     "equations",
 }
 
 func TestFixtures(t *testing.T) {
@@ -427,20 +420,51 @@ func TestLinearTime(t *testing.T) {
 		t.Errorf("10 times the document took %s against %s: more than 30 times as long", large, small)
 	}
 	t.Logf("5,000 paragraphs: %s; 50,000 paragraphs: %s", small, large)
+
+	// The same with every paragraph in a list, across levels and across
+	// numbering instances that each restart the count once.
+	listed := func(n int) []byte {
+		var defs, sb strings.Builder
+		defs.WriteString(docxtest.AbstractNum(0, docxtest.Lvl(0, 1, "decimal", "%1.", ""), docxtest.Lvl(1, 1, "lowerLetter", "%1.%2", ""),
+			docxtest.Lvl(2, 1, "lowerRoman", "%1.%2.%3", ""), docxtest.Lvl(3, 1, "bullet", "•", "")))
+		for i := 1; i <= n/50; i++ {
+			defs.WriteString(docxtest.Num(i, 0, docxtest.StartOverride(0, 1)))
+		}
+		for i := 0; i < n; i++ {
+			sb.WriteString(docxtest.PNum(i/50+1, i*i%4, fmt.Sprintf("Clause %d: the quick brown fox %x", i*7919%100003, i*i)))
+		}
+		return docxtest.New().Numbering(defs.String()).Body(sb.String()).Bytes()
+	}
+	small, large = timeIt(listed(5000)), timeIt(listed(50000))
+	if large > 30*small {
+		t.Errorf("lists: 10 times the document took %s against %s: more than 30 times as long", large, small)
+	}
+	t.Logf("lists: 5,000 paragraphs: %s; 50,000 paragraphs: %s", small, large)
 }
 
 func FuzzBody(f *testing.F) {
 	for _, fx := range docxtest.Fixtures() {
-		f.Add(fx.Doc().Document(), []byte(nil))
+		d := fx.Doc()
+		var numbering []byte
+		for _, e := range d.Entries() {
+			if strings.HasSuffix(e.Name, "numbering.xml") {
+				numbering = e.Data
+			}
+		}
+		f.Add(d.Document(), []byte(nil), numbering)
 	}
-	styled := docxtest.New().Styles(docxtest.NormalStyle + docxtest.Style("H1", "heading 1", "Normal", "", `<w:b/>`))
+	styled := docxtest.New().Styles(docxtest.NormalStyle + docxtest.Style("H1", "heading 1", "Normal", `<w:numPr><w:numId w:val="1"/></w:numPr>`, `<w:b/>`)).
+		Numbering(docxtest.AbstractNum(0, docxtest.Lvl(0, 1, "decimal", "%1.", `<w:pStyle w:val="H1"/>`), docxtest.Lvl(1, 3, "lowerRoman", "%1.%2)", "")) + docxtest.Num(1, 0, ""))
 	entries := styled.Entries()
-	f.Add([]byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="H1"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>`), entries[4].Data)
-	f.Fuzz(func(t *testing.T, document, styles []byte) {
+	f.Add([]byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="H1"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>`), entries[4].Data, entries[5].Data)
+	f.Fuzz(func(t *testing.T, document, styles, numbering []byte) {
 		e := append([]docxtest.Entry(nil), entries...)
 		e[2].Data = document
 		if styles != nil {
 			e[4].Data = styles
+		}
+		if numbering != nil {
+			e[5].Data = numbering
 		}
 		doc, err := open(docxtest.Zip(e...), undocx.Options{Limits: undocx.Limits{MaxDepth: 64, MaxTokenBytes: 1 << 16, MaxPartBytes: 1 << 20}})
 		if err != nil {

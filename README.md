@@ -2,7 +2,7 @@
 
 A pure-Go package that reads Word documents (`.docx`) and returns their content as Markdown, plain text or a structured model, for language models and search indexes. It is the companion of [unpdf](https://github.com/gomcpgo/unpdf) and the reverse of [htmltodocx](https://github.com/gomcpgo/htmltodocx).
 
-**Status: early. The package reads text, headings, formatting, links and fields. Lists do not have their numbers yet and tables come out as their paragraphs; see "Not yet" below.**
+**Status: early. The package reads text, headings, formatting, links, fields and lists with the numbers Word shows. Tables come out as their paragraphs; see "Not yet" below.**
 
 What works today:
 
@@ -13,9 +13,10 @@ What works today:
 - The text as Markdown or plain text, read as Word shows it with tracked changes accepted: deleted and hidden text left out, moved text once, text boxes once.
 - Headings by outline level and built-in style name, so documents in any language and with renamed styles work.
 - Bold, italic, strike-through, superscript, subscript and code; links; the cached results of fields.
+- Lists and numbered headings with the labels Word displays, counted the way Word counts: `4.2`, `(b)`, `iii.`, `Article VII`, continued across interruptions and restarted where Word restarts them. Bullets and plain `1.` lists become Markdown lists; other labels are kept as text, so "see clause 4.2" still means something.
 - Each block with the headings it stands under, for citations and for cutting a document into chunks.
 
-Not yet: list labels and numbering, tables as tables, footnotes and endnotes, comments, form fields, images, equations.
+Not yet: tables as tables, footnotes and endnotes, comments, form fields, images, equations.
 
 ```go
 doc, err := undocx.OpenFile(ctx, "contract.docx", undocx.Options{})
@@ -40,7 +41,7 @@ for block, err := range doc.Blocks(ctx, undocx.ReadOptions{}) {
 	if err != nil {
 		return err
 	}
-	fmt.Println(block.Path, block.Text()) // [Terms Payment] Invoices are due in 30 days.
+	fmt.Println(block.Path, block.Text()) // [1 Terms 1.2 Payment] (a) Invoices are due in 30 days.
 }
 ```
 
@@ -63,7 +64,7 @@ $ go run ./cmd/undocx text contract.docx
 
 ## Test documents
 
-`internal/docxtest` builds packages from WordprocessingML written by hand from ECMA-376: 36 documents, one per feature, each with the text Word displays. No file saved by Word or any other program is part of this repository.
+`internal/docxtest` builds packages from WordprocessingML written by hand from ECMA-376: 39 documents, one per feature, each with the text Word displays. No file saved by Word or any other program is part of this repository.
 
 ```
 go test ./...

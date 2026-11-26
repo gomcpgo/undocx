@@ -58,6 +58,8 @@ func Understood(ns string) bool {
 // Config is what the reader needs besides the part itself.
 type Config struct {
 	Styles *wml.Styles
+	// Numbering is the list definitions, or nil when there are none.
+	Numbering *wml.Numbering
 	// Links maps the relationship ID of an external hyperlink to its
 	// address.
 	Links map[string]string
@@ -97,6 +99,7 @@ type walker struct {
 
 	headings []heading
 	path     []string
+	lists    *lists
 
 	// carry is the content of a paragraph that runs on into the next: one
 	// whose paragraph mark is a tracked deletion, or a drop cap.
@@ -121,6 +124,7 @@ func Read(x *xmlstream.Reader, cfg Config, yield func(model.Block) bool) (int, e
 		cfg.Styles = wml.NoStyles()
 	}
 	w := &walker{x: x, cfg: cfg, out: yield, unmapped: map[string]int{}, badSchemes: map[string]int{}}
+	w.lists = newLists(cfg.Numbering, cfg.Styles)
 	err := w.readBlocks(0)
 	if err == nil && !w.stop {
 		w.flushCarry()
@@ -143,6 +147,7 @@ func (w *walker) report() {
 	if w.equations > 0 {
 		w.cfg.Log.Add(WarnEquation, "%d equations were written as plain text", w.equations)
 	}
+	w.lists.report(w.cfg.Log)
 }
 
 func sortedKeys(m map[string]int) []string {
@@ -852,12 +857,15 @@ func (w *walker) flushCarry() {
 }
 
 func (w *walker) block(props wml.ParaProps, inlines []model.Inline) {
+	// An empty numbered paragraph still takes a number, so the counting
+	// comes before the check for content.
+	num, numbered := w.lists.number(props)
 	inlines = trim(inlines)
 	if model.Empty(inlines) {
 		return
 	}
 	style := w.cfg.Styles.Para(props.Style)
-	b := model.Block{Inlines: inlines}
+	b := model.Block{Inlines: inlines, Label: num.label}
 	if style != nil {
 		b.Style = style.Name
 	}
@@ -869,19 +877,23 @@ func (w *walker) block(props wml.ParaProps, inlines []model.Inline) {
 		level = 0 // set to body text on the paragraph itself
 	}
 	switch {
+	case w.box > 0 && numbered:
+		b.Kind, b.Level, b.LabelKind = model.ListItem, num.level+1, num.kind
 	case w.box > 0:
 		// A heading in a text box is not a section of the document.
 	case level > 0:
 		b.Kind, b.Level = model.Heading, level
 	case strings.EqualFold(b.Style, "title"):
 		b.Kind = model.Title
+	case numbered:
+		b.Kind, b.Level, b.LabelKind = model.ListItem, num.level+1, num.kind
 	}
 	if b.Kind == model.Heading {
 		for n := len(w.headings); n > 0 && w.headings[n-1].level >= level; n = len(w.headings) {
 			w.headings = w.headings[:n-1]
 		}
 		b.Path = titles(w.headings)
-		w.headings = append(w.headings, heading{level, pathTitle(inlines)})
+		w.headings = append(w.headings, heading{level, pathTitle(b.Label, inlines)})
 		w.path = titles(w.headings)
 	} else {
 		b.Path = w.path
@@ -902,8 +914,8 @@ func titles(hs []heading) []string {
 
 // pathTitle returns the text of a heading as it appears in a heading path:
 // on one line and of bounded length.
-func pathTitle(inlines []model.Inline) string {
-	s := strings.Join(strings.Fields(model.PlainText(inlines)), " ")
+func pathTitle(label string, inlines []model.Inline) string {
+	s := strings.Join(strings.Fields(label+" "+model.PlainText(inlines)), " ")
 	if utf8.RuneCountInString(s) > maxPathTitle {
 		s = string([]rune(s)[:maxPathTitle]) + "…"
 	}
