@@ -55,13 +55,11 @@ func failures(f docxtest.Fixture, text, md string) []string {
 // why. Every other fixture must pass all its checks. A fixture listed here
 // that passes is an error too, so the list cannot go stale.
 var later = map[string]string{
-	"table-simple": "tables",
-	"table-merged": "tables",
-	"notes":        "footnotes and endnotes",
-	"comments":     "comments",
-	"form-fields":  "form fields",
-	"image":        "images",
-	"equation":     "equations",
+	"notes":       "footnotes and endnotes",
+	"comments":    "comments",
+	"form-fields": "form fields",
+	"image":       "images",
+	"equation":    "equations",
 }
 
 func TestFixtures(t *testing.T) {

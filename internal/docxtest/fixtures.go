@@ -327,6 +327,37 @@ func Fixtures() []Fixture {
 			MarkdownNot: []string{"|", "<table"},
 		},
 		{
+			Name:  "table-cells",
+			About: "cells with several paragraphs, a list, a line break, a | and a row number that is only a list label",
+			Doc: func() *Doc {
+				return New().Numbering(AbstractNum(0, Lvl(0, 1, "decimal", "%1.", ""))+AbstractNum(1, Lvl(0, 1, "bullet", "•", ""))+Num(1, 0, "")+Num(2, 1, "")).
+					Body(P("Order:"), Tbl(3,
+						TrPr(`<w:tblHeader/>`, Tc("No."), Tc("Item"), Tc("Notes")),
+						Tr(TcPr("", PNum(1, 0, "")), Tc("Cable A|B"), TcPr("", P("Two metres."), P("Black."))),
+						Tr(TcPr("", PNum(1, 0, "")), TcPr("", Para(R("Adapter"), `<w:r><w:br/></w:r>`, R("with case"))), TcPr("", PNum(2, 0, "tested"), PNum(2, 0, "boxed")))),
+						P("End."))
+			},
+			Text:     lines("Order:", "No.\tItem\tNotes", "1.\tCable A|B\tTwo metres. Black.", "2.\tAdapter with case\t• tested • boxed", "End."),
+			Must:     []string{"1. Cable", "2. Adapter", "tested", "boxed"},
+			Markdown: []string{`A\|B || <table`, "metres.<br>Black. || <table"},
+		},
+		{
+			Name:  "table-grid",
+			About: "merges down and across in header and body, a row that starts in the second column, and text in a merged-away cell, which LibreOffice and pandoc both leave out",
+			Doc: func() *Doc {
+				return New().Body(Tbl(4,
+					TrPr(`<w:tblHeader/>`, TcPr(`<w:vMerge w:val="restart"/>`, P("Team")), TcPr(`<w:gridSpan w:val="3"/>`, P("Results"))),
+					TrPr(`<w:tblHeader/>`, TcPr(`<w:vMerge/>`, `<w:p/>`), Tc("Won"), Tc("Lost"), Tc("Drawn")),
+					Tr(TcPr(`<w:vMerge w:val="restart"/>`, P("Reds")), Tc("3"), Tc("1"), Tc("0")),
+					Tr(TcPr(`<w:vMerge/>`, P("MERGEDAWAY")), TcPr(`<w:gridSpan w:val="3"/>`, P("Second season"))),
+					TrPr(`<w:gridBefore w:val="1"/>`, Tc("7"), Tc("2"), Tc("1"))), P("After the table."))
+			},
+			Text:     lines("Team\tResults", "\tWon\tLost\tDrawn", "Reds\t3\t1\t0", "\tSecond season", "\t7\t2\t1", "After the table."),
+			MustNot:  []string{"MERGEDAWAY"},
+			Once:     []string{"Team", "Reds", "Second season"},
+			Markdown: []string{`rowspan="2"`, `colspan="3"`, "<th"},
+		},
+		{
 			Name:  "notes",
 			About: "a footnote and an endnote",
 			Doc: func() *Doc {

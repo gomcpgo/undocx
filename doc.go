@@ -1,5 +1,5 @@
-// Package undocx reads Word documents (.docx): their metadata today, and
-// their text, structure and images as the package grows. It is written in
+// Package undocx reads Word documents (.docx): their metadata, and their
+// content as Markdown, plain text or a sequence of blocks. It is written in
 // pure Go with the standard library alone: no cgo and no external programs.
 //
 // Word files are treated as untrusted input. A .docx is a zip archive of XML
@@ -27,6 +27,27 @@
 // Open accepts .docx, .docm, .dotx and .dotm files, in the Transitional and
 // the Strict conformance class. Info.Format says which kind it found; the
 // file name plays no part.
+//
+// # Reading the content
+//
+// Markdown and Text return the document whole, and WriteMarkdown and
+// WriteText write it out as it is read. Blocks is an iterator over the
+// paragraphs, headings, list items and tables, each with the headings it
+// stands under; a block renders itself with its Text and Markdown methods.
+//
+//	md, err := doc.Markdown(ctx, undocx.MarkdownOptions{})
+//
+//	for block, err := range doc.Blocks(ctx, undocx.ReadOptions{}) {
+//		if err != nil {
+//			return err
+//		}
+//		fmt.Println(block.Path, block.Text())
+//	}
+//
+// The document is read as Word shows it with every tracked change accepted.
+// A list item carries the label Word displays. A table is one block with
+// its rows and cells; in Markdown it is a pipe table, or an HTML table when
+// cells are merged.
 //
 // # Errors
 //

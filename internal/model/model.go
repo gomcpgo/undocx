@@ -21,6 +21,9 @@ const (
 	// is its level in the list, from 1, and Block.Label its number or
 	// bullet.
 	ListItem
+	// Table is a table. Block.Table holds its rows and cells, and
+	// Block.Inlines is empty.
+	Table
 )
 
 func (k BlockKind) String() string {
@@ -31,11 +34,14 @@ func (k BlockKind) String() string {
 		return "title"
 	case ListItem:
 		return "list item"
+	case Table:
+		return "table"
 	}
 	return "paragraph"
 }
 
-// Block is one paragraph-level piece of the document.
+// Block is one paragraph-level piece of the document: a paragraph of some
+// kind, or a table.
 type Block struct {
 	Kind BlockKind
 	// Level is the rank of a heading, from 1 for the highest to 9. It is
@@ -61,10 +67,56 @@ type Block struct {
 	// Path is the headings the block stands under, outermost first: for a
 	// paragraph in section 3.2, the text of heading 3 and of heading 3.2.
 	// For a heading it is the headings above it. The slice is shared
-	// between blocks and must not be changed.
+	// between blocks and must not be changed. A block inside a table cell
+	// has no path of its own; it stands where its table stands.
 	Path []string
-	// Inlines is the content of the block, in reading order.
+	// Inlines is the content of the block, in reading order. A table has
+	// none.
 	Inlines []Inline
+	// Table is the rows of a Table block, and nil for any other kind.
+	Table *TableData
+}
+
+// TableData is the content of a Table block: its rows, each cell placed on
+// the grid of columns that the table's cells line up on.
+type TableData struct {
+	// Columns is the number of columns of the grid.
+	Columns int
+	// Rows is the rows from top to bottom. A row whose cells are all
+	// covered by cells merged down from above has no cells.
+	Rows []Row
+	// Continued reports that this block carries on the table of the block
+	// before it. A table of several thousand rows is handed on in parts,
+	// so that it need not be held in memory whole. Each part starts with
+	// the table's header rows again, as each page of the table does in
+	// Word.
+	Continued bool
+}
+
+// Row is one row of a table.
+type Row struct {
+	// Header reports that the row is a header row: one of the rows at the
+	// top of the table that Word repeats on each page.
+	Header bool
+	// Cells is the cells that begin in this row, from left to right. A
+	// cell merged down from a row above is not repeated.
+	Cells []Cell
+}
+
+// Cell is one cell of a table.
+type Cell struct {
+	// Col is the grid column the cell starts in, from 0. Columns that no
+	// cell of a row covers are empty space: the row is indented, or
+	// shorter than the table is wide.
+	Col int
+	// ColSpan and RowSpan are the columns and rows the cell covers, 1 for
+	// a cell that is not merged.
+	ColSpan, RowSpan int
+	// Blocks is the content of the cell: paragraphs, list items, and
+	// tables nested in it. A heading in a cell keeps its kind, but does
+	// not open a section of the document. A numbered paragraph with no
+	// text is kept, since its number is often all a cell holds.
+	Blocks []Block
 }
 
 // LabelKind says how Markdown writes the label of a list item.

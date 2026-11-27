@@ -23,6 +23,7 @@ internal/opc: the zip archive as a package: parts, content types, relationships
 internal/wml: the styles and the list definitions, read whole
 internal/body: the main part, read as a stream into blocks, with the list
                counters kept as it goes (internal/numfmt writes the numbers)
+               and each table kept until it ends
   ▼
 internal/model: blocks and inline runs, and their Markdown and plain text
   ▼
@@ -78,10 +79,10 @@ Defaults were set against a corpus of 965 real documents: the largest part is 18
 
 ### Reading the body
 
-- **One pass, a paragraph at a time.** The main part is read as a stream and each block is handed on when it is complete. What carries over between paragraphs is small: the open fields, the headings the text stands under, and a paragraph waiting to be joined to the next. Converting 50,000 paragraphs takes ten times as long as 5,000, and the largest corpus document (18 MiB of XML) peaks at 13 MB of memory.
-- **The block loop does not call itself.** Table rows and cells, content controls and custom XML wrappers are passed through, and every paragraph found is a block, however deep. Only a text box nests a call, and the XML depth limit bounds that.
+- **One pass, a paragraph or a table at a time.** The main part is read as a stream and each block is handed on when it is complete. What carries over between paragraphs is small: the open fields, the headings the text stands under, a paragraph waiting to be joined to the next, and the rows of a table that has not ended. Converting 50,000 paragraphs takes ten times as long as 5,000, and the largest corpus document (18 MiB of XML) peaks at 14 MB of memory.
+- **The block loop does not call itself.** Content controls and custom XML wrappers are passed through, and the open tables are kept on a stack of the loop's own, so a table in a cell in a table costs no call. Only a text box nests a call, and the XML depth limit bounds that. The blocks themselves do nest (a cell holds blocks, and a table is a block), so the writers call themselves once for each level of tables; they write into one buffer, so the depth costs no copying.
+- **A heading opens a section when its block is handed on, not when its paragraph is read.** Whether a heading in a table cell is a heading of the document depends on what the table turns out to be, and that shows only at the table's end.
 - **Text comes only from `w:t` in a run. Every wrapper is passed through.** `w:ins`, `w:moveTo`, `w:smartTag`, `w:customXml`, `w:dir`, `w:bdo`, `w:sdt`, `w:fldSimple` and anything a later version of Word adds are descended into without being named. A reader that lists the wrappers it knows loses text in the ones it forgot; this one cannot.
-- **Tables are flattened for now.** Their paragraphs come out in reading order. Structure comes with the tables milestone.
 
 ### Lists and numbering
 
@@ -119,6 +120,61 @@ How a label is written:
 - **Items of one list are on consecutive lines.** A blank line separates them only where Markdown needs one: before an item that is not a bullet and does not start at 1, since only those may begin straight after a line of text.
 - **Markdown renumbers an ordered list from its first item,** so where a list restarts straight after another (`3.` then `1.`), an empty HTML comment keeps the two apart. Without it the second list would read `4.`.
 - **Plain text indents a list item by two spaces for each level below the first,** which is the only sign of nesting a bullet has.
+
+### Tables
+
+A table is one block, with its rows and cells. The rules below come from the standard, from documents built for the purpose and read with LibreOffice and pandoc, and from the tables of the corpus. Where LibreOffice and pandoc disagree, the choice and the reason are given. What Word does in those places is not known.
+
+What a table is:
+
+- **A table is kept until it ends.** Three things show only then: whether it is a table at all, which cells are merged, and whether Markdown can write it.
+- **A table with text in only one cell of each row is not a table.** It is a frame around a notice, or a page laid out with empty cells for space, as documents made from HTML are. Its paragraphs are handed on as paragraphs of whatever the table stands in, and a heading among them opens a section. The cost: a form with labels in one column and blanks in the other reads as its labels alone.
+- **A table with no text is left out.** An empty row of a table that has text is kept: it is a row someone is meant to fill in.
+- **A heading in a cell of a real table keeps its kind and opens no section.** It is written in bold. The blocks in a cell have no heading path of their own.
+- **An empty numbered paragraph in a cell is kept,** as its label alone. It is often all the cell holds: the number of the row. Outside a table such a paragraph still only counts.
+- **A long table is handed on in parts of 1,000 rows,** so that a table of any length is read in bounded memory: 200,000 rows take 14 MB. Each part is a block of its own, marked as a continuation, and starts with the table's header rows again, as each page of the table does in Word. A cell is merged only with cells of its own part. No table in the corpus is this long (the longest has 948 rows).
+
+Where a cell stands:
+
+- **A cell starts in the column after the cell before it,** or after the columns its row leaves empty (`w:gridBefore`), and covers `w:gridSpan` columns. The number of columns comes from the rows; `w:tblGrid` is read only for its widths.
+- **The columns written are the ones a reader sees, not the grid lines of the file.** Every place where a cell ever ended stays a grid line, so the grid of a plain five-column table may have eleven lines, with every cell spanning two. Only the lines where a cell starts or ends count as column edges. Edges closer together than an eighth of an inch are one edge, unless a cell lies between them: Word leaves columns a hair wide behind when cells are dragged, and rows of one corpus document start 11 twentieths of a point apart. Read as they stand, such tables are all merged cells, and pandoc writes them with columns of width 0%. A width the file does not state is taken as wide.
+- **An indent that every row has is not a column.**
+- **A span is capped at 63 columns,** the most Word allows in a table, so that a cell cannot claim a width the output would have to fill.
+- **Rows that the file shifts sideways by a real distance stay shifted.** One corpus document has many tables whose rows each start a third of an inch further right. They are written as the file has them.
+
+Merged cells:
+
+- **A cell marked as continuing a merge down rows is part of the cell above it when that one starts in the same column, covers as many columns and is merged itself.** The comparison is made on the columns a reader sees, so rows a hair apart still merge.
+- **Otherwise it is a cell of its own.** LibreOffice reads a continuation that nothing began as a cell with its text. pandoc merges it into the cell above, whatever that is, and drops its text. The first loses nothing.
+- **Text in a merged-away cell is left out, with a warning that counts the cells.** LibreOffice and pandoc both leave it out, and no corpus document has any. Whether Word shows it has not been checked.
+- **The older merge across columns (`w:hMerge`) joins the cells and keeps the text of each.** LibreOffice does the same; pandoc ignores the element.
+- **A deleted row and a deleted cell (`w:cellDel`) are gone; a merge that is a tracked change (`w:cellMerge`) is made.** A hidden row (`w:hidden`) whose text is hidden too is left out.
+
+Header rows:
+
+- **A header row is a row marked `w:tblHeader` at the top of the table,** at most eight of them. That mark is what Word's "repeat as header row" sets, and it is a statement about the row. The "header row" option of a table style (`w:tblLook`) is not used: it says how the style paints the first row, not what the row is, and it is set on half the tables of the corpus (640 of 1,334). pandoc does treat most first rows as headers; in the corpus the two agree only where `w:tblHeader` is set.
+
+Around a table:
+
+- **A paragraph cannot run on into a table, or from one cell into the next.** A paragraph whose mark is deleted, or a drop cap, is handed on at the end of its cell.
+- **A content control around a cell that nobody has filled in leaves the cell in place, empty.** Left out with the cell, it would move the cells after it one column to the left. Around rows or a whole table it is left out with them.
+- **Rows and cells with no table around them are passed through,** and their paragraphs are paragraphs.
+- **Damage inside a table keeps the rows read before it.**
+
+As Markdown:
+
+- **A pipe table where Markdown can write one,** and an HTML table where it cannot: a merged cell, a table in a cell, or more than one header row.
+- **In a pipe table the first row is the header,** because the syntax needs one. A later part of a long table that has no header rows gets an empty header, since its first row is a row of data.
+- **A cell is one line.** Its paragraphs are joined with `<br>`, a list item starts with its label, and every `|` is escaped, which the syntax asks for even in a code span. In a link address it is written `%7C`.
+- **Rows are filled out with empty cells to the table's width,** up to 64 columns. In a wider table, which Word cannot make, only the header is, so that one very long row cannot make every other row long.
+- **In an HTML table nothing is Markdown.** A Markdown reader takes the lines of an HTML block as they stand, so bold, links and line breaks are tags, and `<`, `>` and `&` are character references. There is no empty line in it, which would end the block.
+- **A column a row leaves empty gets an empty cell in HTML; a column covered by a cell merged from above does not.**
+
+As plain text:
+
+- **A line for each row and a tab between cells,** so that a table can be read as tab-separated values. A cell is in its column whatever is merged above or beside it: a cell that covers three columns is followed by three tabs. Tabs at the end of a line are dropped, and a row with no text has no line.
+- **The paragraphs of a cell are joined with a space,** since a line end would end the row.
+- **A table in a cell follows the row it stands in.**
 
 ### Tracked changes
 
@@ -173,4 +229,5 @@ The document is read as it looks with every change accepted.
 - **Hostile archives** are built with `docxtest.Zip`, which takes entries as given: repeated names, leading slashes, backslashes, an encryption flag. `docxtest.CompoundFile` writes the container of the older formats, and was checked with two independent readers.
 - **`TestFixtures` runs every fixture through `Text` and `Markdown`** and applies its checks. Fixtures whose features are not built yet are listed with the reason; one of them passing is a failure too, so the list cannot go stale.
 - **Fuzz targets:** `FuzzDetect` (sniffing and the compound-file directory), `FuzzReader` (the XML reader), `FuzzOpen` in `opc` and `FuzzOpen` on the public API, `FuzzBody` (a main part, a styles part and a numbering part of arbitrary bytes inside a sound package), and `FuzzFormat` (the number formats).
-- **Not in this repository:** a corpus of documents written by Word and other programs, a harness that compares against other converters, a check of list labels against LibreOffice's, and a mutation sweep that damages every corpus file. They are run before each release, and their documents are never committed.
+- **`TestTables` and `TestTableGrid` state the table rules,** one small document for each, with both outputs written out. `TestTableTime` guards the costs: a long table, cells that claim to be wide, one very wide row over many short ones, and deep nesting.
+- **Not in this repository:** a corpus of documents written by Word and other programs, a harness that compares against other converters, a check of list labels against LibreOffice's, a check of table grids against pandoc's HTML output, and a mutation sweep that damages every corpus file. They are run before each release, and their documents are never committed.

@@ -4,8 +4,8 @@
 // The part is read once, front to back. Blocks are handed on as they are
 // completed, so memory does not grow with the document. What carries over
 // from one paragraph to the next is small: the fields still open, the
-// headings the text stands under, and a paragraph waiting to be joined to the
-// next one.
+// headings the text stands under, a paragraph waiting to be joined to the
+// next one, and the rows of a table that has not ended.
 package body
 
 import (
@@ -88,9 +88,15 @@ type heading struct {
 }
 
 type walker struct {
-	x      *xmlstream.Reader
-	cfg    Config
-	out    func(model.Block) bool
+	x     *xmlstream.Reader
+	cfg   Config
+	yield func(model.Block) bool
+	// out takes the blocks that are not in a table cell: it hands them to
+	// the caller, or keeps them for the paragraph a text box is anchored
+	// in.
+	out func(model.Block) bool
+	// cell is the table cell being read, which takes the blocks instead.
+	cell   *cell
 	stop   bool
 	blocks int
 
@@ -112,6 +118,7 @@ type walker struct {
 	unmapped     map[string]int
 	equations    int
 	badSchemes   map[string]int
+	mergedText   int // cells merged into the one above that hold text
 }
 
 // Read reads the main part from x, which must be at its start, and calls
@@ -123,7 +130,8 @@ func Read(x *xmlstream.Reader, cfg Config, yield func(model.Block) bool) (int, e
 	if cfg.Styles == nil {
 		cfg.Styles = wml.NoStyles()
 	}
-	w := &walker{x: x, cfg: cfg, out: yield, unmapped: map[string]int{}, badSchemes: map[string]int{}}
+	w := &walker{x: x, cfg: cfg, yield: yield, unmapped: map[string]int{}, badSchemes: map[string]int{}}
+	w.out = w.top
 	w.lists = newLists(cfg.Numbering, cfg.Styles)
 	err := w.readBlocks(0)
 	if err == nil && !w.stop {
@@ -147,6 +155,9 @@ func (w *walker) report() {
 	if w.equations > 0 {
 		w.cfg.Log.Add(WarnEquation, "%d equations were written as plain text", w.equations)
 	}
+	if w.mergedText > 0 {
+		w.cfg.Log.Add(WarnMergedCell, "%d table cells that are merged into the cell above them hold text of their own, which is not shown and was left out", w.mergedText)
+	}
 	w.lists.report(w.cfg.Log)
 }
 
@@ -164,25 +175,57 @@ func sortedKeys(m map[string]int) []string {
 	return keys
 }
 
+// emit hands on a block: to the table cell being read, or else to whoever
+// takes the blocks outside tables.
 func (w *walker) emit(b model.Block) {
-	if w.stop {
-		return
-	}
-	w.blocks++
-	if !w.out(b) {
+	switch {
+	case w.stop:
+	case w.cell != nil:
+		w.cell.blocks = append(w.cell.blocks, b)
+	case !w.out(b):
 		w.stop = true
 	}
+}
+
+// top hands a block of the document's own sequence to the caller, with the
+// headings it stands under. A heading opens a section here and not where
+// its paragraph was read, because a heading in a cell of a real table opens
+// none, and what a table is shows only at its end.
+func (w *walker) top(b model.Block) bool {
+	w.blocks++
+	if b.Kind == model.Heading {
+		for n := len(w.headings); n > 0 && w.headings[n-1].level >= b.Level; n = len(w.headings) {
+			w.headings = w.headings[:n-1]
+		}
+		b.Path = titles(w.headings)
+		w.headings = append(w.headings, heading{b.Level, pathTitle(b.Label, b.Inlines)})
+		w.path = titles(w.headings)
+	} else {
+		b.Path = w.path
+	}
+	return w.yield(b)
 }
 
 // readBlocks reads block-level content until the element at depth until has
 // ended, or to the end of the part when until is 0.
 //
-// It does not call itself for nested containers. Table rows and cells,
-// content controls and custom XML wrappers are simply passed through, and
-// each paragraph found is a block, however deep. Tables get their structure
-// in a later version; here their text is kept in reading order.
+// It does not call itself for nested containers. Content controls and
+// custom XML wrappers are simply passed through, and the tables that are
+// open are kept on a stack of its own, so the depth of nesting costs no
+// stack of ours.
 func (w *walker) readBlocks(until int) error {
-	var rows, controls []int // depths of the open w:tr and w:sdt elements
+	var tables []*table
+	err := w.readContent(until, &tables)
+	// Damage may have cut tables short. What was read of them is kept.
+	w.closeTables(&tables, 0)
+	return err
+}
+
+func (w *walker) readContent(until int, tables *[]*table) error {
+	var controls []int // depths of the open w:sdt elements
+	// muted is the depth of a content control whose paragraphs are left
+	// out, or 0.
+	muted := 0
 	for !w.stop {
 		tok, err := w.x.Token()
 		if err == io.EOF {
@@ -197,7 +240,11 @@ func (w *walker) readBlocks(until int) error {
 		switch el := tok.(type) {
 		case xml.EndElement:
 			d := w.x.Depth()
-			rows, controls = popAbove(rows, d), popAbove(controls, d)
+			controls = popAbove(controls, d)
+			w.closeTables(tables, d)
+			if muted > d {
+				muted = 0
+			}
 			if d < until {
 				return nil
 			}
@@ -205,29 +252,76 @@ func (w *walker) readBlocks(until int) error {
 			if el.Name.Space != wml.NS {
 				continue
 			}
+			var t *table // the innermost open table
+			if n := len(*tables); n > 0 {
+				t = (*tables)[n-1]
+			}
 			switch el.Name.Local {
 			case "p":
-				if err := w.paragraph(); err != nil {
-					return err
+				if muted != 0 {
+					err = w.x.Skip()
+				} else {
+					err = w.paragraph()
 				}
-			case "tr":
-				rows = append(rows, w.x.Depth())
-			case "trPr":
-				// A row that is a tracked deletion is gone once the
-				// change is accepted.
-				deleted, err := w.hasChild("del")
 				if err != nil {
 					return err
 				}
-				if deleted && len(rows) > 0 {
-					if err := w.x.SkipTo(rows[len(rows)-1]); err != nil {
+			case "tbl":
+				// A paragraph cannot run on into a table.
+				w.flushCarry()
+				*tables = append(*tables, &table{depth: w.x.Depth(), outer: w.cell})
+			case "tr":
+				if t != nil && t.row == nil {
+					t.row = &row{depth: w.x.Depth()}
+				}
+			case "trPr":
+				if t == nil || t.row == nil || w.x.Depth() != t.row.depth+1 {
+					if err := w.x.Skip(); err != nil {
 						return err
 					}
-					rows = rows[:len(rows)-1]
+					continue
 				}
+				props, err := wml.ReadRowProps(w.x)
+				if err != nil {
+					return err
+				}
+				t.row.props = props
+				if props.Deleted {
+					// A row that is a tracked deletion is gone once the
+					// change is accepted.
+					depth := t.row.depth
+					t.row = nil
+					if err := w.x.SkipTo(depth); err != nil {
+						return err
+					}
+				}
+			case "tc":
+				if t != nil && t.row != nil && t.cell == nil {
+					t.cell = &cell{depth: w.x.Depth()}
+					w.cell = t.cell
+				}
+			case "tcPr":
+				if t == nil || t.cell == nil || w.x.Depth() != t.cell.depth+1 {
+					if err := w.x.Skip(); err != nil {
+						return err
+					}
+					continue
+				}
+				props, err := wml.ReadCellProps(w.x)
+				if err != nil {
+					return err
+				}
+				t.cell.props = props
 			case "sdt":
 				controls = append(controls, w.x.Depth())
 			case "sdtPr":
+				n := len(controls)
+				if n == 0 || w.x.Depth() != controls[n-1]+1 {
+					if err := w.x.Skip(); err != nil {
+						return err
+					}
+					continue
+				}
 				// A content control that nobody has filled in shows a
 				// prompt such as "Click here to enter text", which is
 				// not content.
@@ -235,19 +329,41 @@ func (w *walker) readBlocks(until int) error {
 				if err != nil {
 					return err
 				}
-				if placeholder && len(controls) > 0 && !w.cfg.Placeholders {
-					w.placeholders++
-					if err := w.x.SkipTo(controls[len(controls)-1]); err != nil {
-						return err
-					}
-					controls = controls[:len(controls)-1]
+				if !placeholder || w.cfg.Placeholders {
+					continue
 				}
+				w.placeholders++
+				if t != nil && t.row != nil && t.cell == nil {
+					// The control is around cells of a row. Leaving them
+					// out would move the cells after them to the left,
+					// so the cells stay and their paragraphs go.
+					if muted == 0 {
+						muted = controls[n-1]
+					}
+					continue
+				}
+				if err := w.x.SkipTo(controls[n-1]); err != nil {
+					return err
+				}
+				controls = controls[:n-1]
 			case "altChunk":
 				w.cfg.Log.Add(WarnAltChunk, "the document embeds content in another format (w:altChunk), which was not read")
 				if err := w.x.Skip(); err != nil {
 					return err
 				}
-			case "sectPr", "tblPr", "tblGrid", "tcPr", "tblPrEx":
+			case "tblGrid":
+				if t == nil || t.row != nil || w.x.Depth() != t.depth+1 {
+					if err := w.x.Skip(); err != nil {
+						return err
+					}
+					continue
+				}
+				widths, err := wml.ReadGrid(w.x)
+				if err != nil {
+					return err
+				}
+				t.widths = widths
+			case "sectPr", "tblPr", "tblPrEx":
 				if err := w.x.Skip(); err != nil {
 					return err
 				}
@@ -501,19 +617,17 @@ func (w *walker) inline(p *para, el xml.StartElement) error {
 // textBox reads the paragraphs of a text box, which are shown after the
 // paragraph it is anchored in.
 func (w *walker) textBox(p *para) error {
-	out, carry := w.out, w.carry
+	out, in, carry := w.out, w.cell, w.carry
 	w.out = func(b model.Block) bool {
 		p.after = append(p.after, b)
 		return true
 	}
-	w.carry = nil
+	w.cell, w.carry = nil, nil
 	w.box++
-	blocks := w.blocks
 	err := w.readBlocks(w.x.Depth())
 	w.flushCarry()
 	w.box--
-	w.blocks = blocks // counted when the anchoring paragraph hands them on
-	w.out, w.carry = out, carry
+	w.out, w.cell, w.carry = out, in, carry
 	return err
 }
 
@@ -862,7 +976,12 @@ func (w *walker) block(props wml.ParaProps, inlines []model.Inline) {
 	num, numbered := w.lists.number(props)
 	inlines = trim(inlines)
 	if model.Empty(inlines) {
-		return
+		// In a table an empty numbered paragraph is often all a cell
+		// holds: the number of its row.
+		if w.cell == nil || num.label == "" {
+			return
+		}
+		inlines = nil
 	}
 	style := w.cfg.Styles.Para(props.Style)
 	b := model.Block{Inlines: inlines, Label: num.label}
@@ -887,16 +1006,6 @@ func (w *walker) block(props wml.ParaProps, inlines []model.Inline) {
 		b.Kind = model.Title
 	case numbered:
 		b.Kind, b.Level, b.LabelKind = model.ListItem, num.level+1, num.kind
-	}
-	if b.Kind == model.Heading {
-		for n := len(w.headings); n > 0 && w.headings[n-1].level >= level; n = len(w.headings) {
-			w.headings = w.headings[:n-1]
-		}
-		b.Path = titles(w.headings)
-		w.headings = append(w.headings, heading{level, pathTitle(b.Label, inlines)})
-		w.path = titles(w.headings)
-	} else {
-		b.Path = w.path
 	}
 	w.emit(b)
 }

@@ -105,3 +105,21 @@ func TestAppend(t *testing.T) {
 		t.Errorf("Empty is wrong")
 	}
 }
+
+func TestTableLinks(t *testing.T) {
+	link := Inline{Text: "a|b", Link: `https://example.test/a|b?c=1&d="2"`}
+	row := func(span int) Row {
+		return Row{Cells: []Cell{
+			{Col: 0, ColSpan: span, RowSpan: 1, Blocks: []Block{{Inlines: []Inline{text("see "), link, text(" <now>")}}}},
+			{Col: span, ColSpan: 1, RowSpan: 1, Blocks: []Block{{Inlines: []Inline{{Text: "x", Bold: true, Code: true}}}}},
+		}}
+	}
+	pipe := Block{Kind: Table, Table: &TableData{Rows: []Row{row(1)}}}.Markdown()
+	if want := "| see [a\\|b](https://example.test/a%7Cb?c=1&d=\"2\") \\<now> | **`x`** |\n| --- | --- |"; pipe != want {
+		t.Errorf("pipe table:\n%s\nwant\n%s", pipe, want)
+	}
+	html := Block{Kind: Table, Table: &TableData{Rows: []Row{row(2)}}}.Markdown()
+	if want := "<table>\n<tr><td colspan=\"2\">see <a href=\"https://example.test/a|b?c=1&amp;d=&quot;2&quot;\">a|b</a> &lt;now&gt;</td><td><strong><code>x</code></strong></td></tr>\n</table>"; html != want {
+		t.Errorf("HTML table:\n%s\nwant\n%s", html, want)
+	}
+}

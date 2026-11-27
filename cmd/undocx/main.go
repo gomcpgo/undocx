@@ -167,7 +167,8 @@ func convert(ctx context.Context, args []string, markdown bool) error {
 }
 
 // blocks prints one JSON object per block: its kind, level, style, heading
-// path and text.
+// path and text. For a table the text is a line for each row, with a tab
+// between cells.
 func blocks(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("blocks", flag.ExitOnError)
 	toc := fs.Bool("toc", false, "keep the generated table of contents")
@@ -187,14 +188,24 @@ func blocks(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		enc.Encode(struct {
-			Kind  string   `json:"kind"`
-			Level int      `json:"level,omitempty"`
-			Label string   `json:"label,omitempty"`
-			Style string   `json:"style,omitempty"`
-			Path  []string `json:"path,omitempty"`
-			Text  string   `json:"text"`
-		}{b.Kind.String(), b.Level, b.Label, b.Style, b.Path, undocx.Block{Inlines: b.Inlines}.Text()})
+		out := struct {
+			Kind      string   `json:"kind"`
+			Level     int      `json:"level,omitempty"`
+			Label     string   `json:"label,omitempty"`
+			Style     string   `json:"style,omitempty"`
+			Path      []string `json:"path,omitempty"`
+			Rows      int      `json:"rows,omitempty"`
+			Columns   int      `json:"columns,omitempty"`
+			Continued bool     `json:"continued,omitempty"`
+			Text      string   `json:"text"`
+		}{Kind: b.Kind.String(), Level: b.Level, Label: b.Label, Style: b.Style, Path: b.Path}
+		if b.Kind == undocx.Table {
+			out.Rows, out.Columns, out.Continued = len(b.Table.Rows), b.Table.Columns, b.Table.Continued
+			out.Text = b.Text()
+		} else {
+			out.Text = undocx.Block{Inlines: b.Inlines}.Text()
+		}
+		enc.Encode(out)
 	}
 	return nil
 }

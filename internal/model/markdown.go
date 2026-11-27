@@ -8,7 +8,17 @@ import (
 
 // Text returns the text of the block without formatting, with its label in
 // front. A line break inside the block is a newline.
+//
+// A table is one line for each row, with a tab between cells, so that every
+// cell is in its column: a cell merged across columns is followed by as many
+// tabs as it covers columns. The paragraphs of a cell are joined with a
+// space. A table inside a cell follows the row it stands in.
 func (b Block) Text() string {
+	if b.Kind == Table {
+		var sb strings.Builder
+		b.Table.text(&sb)
+		return sb.String()
+	}
 	if b.Label != "" {
 		return b.Label + " " + PlainText(b.Inlines)
 	}
@@ -26,8 +36,16 @@ func (b Block) Text() string {
 // the syntax for its label (see LabelKind), and otherwise as a paragraph
 // that starts with its label. A block on its own does not know its place
 // in a list, so it is not indented; MarkdownWriter nests items.
+//
+// A table is a pipe table, with its header row first. Markdown has no way to
+// write a merged cell, a table within a cell or a second header row, so a
+// table with any of these is written as an HTML table instead.
 func (b Block) Markdown() string {
 	switch b.Kind {
+	case Table:
+		var sb strings.Builder
+		b.Table.markdown(&sb)
+		return sb.String()
 	case Heading:
 		return strings.Repeat("#", min(max(b.Level, 1), 6)) + " " + b.headingText()
 	case Title:
@@ -90,11 +108,11 @@ type segment struct {
 	isBrk bool
 }
 
-func segments(in []Inline, heading bool) []segment {
+func segments(in []Inline, heading, cell bool) []segment {
 	segs := make([]segment, 0, len(in))
 	for _, x := range in {
 		if x.Kind == Break {
-			if heading {
+			if heading && !cell {
 				segs = append(segs, segment{text: " "})
 			} else {
 				segs = append(segs, segment{isBrk: true})
@@ -131,14 +149,24 @@ func segments(in []Inline, heading bool) []segment {
 // inlines renders the content of a block. start says that the content
 // begins a line, where a few more characters are markup.
 func inlines(in []Inline, heading, start bool) string {
-	segs := segments(in, heading)
+	return render(in, heading, start, false)
+}
+
+// render is inlines with one more choice: cell says that the content goes
+// into a cell of a pipe table, which is a single line.
+func render(in []Inline, heading, start, cell bool) string {
+	segs := segments(in, heading, cell)
 	var sb strings.Builder
 	lineStart := 0 // where the current line began in sb
 	for i := 0; i < len(segs); {
 		if segs[i].isBrk {
-			// A backslash at the end of a line is a line break.
 			trimTrailingSpace(&sb, lineStart)
-			sb.WriteString("\\\n")
+			if cell {
+				sb.WriteString("<br>")
+			} else {
+				// A backslash at the end of a line is a line break.
+				sb.WriteString("\\\n")
+			}
 			lineStart = sb.Len()
 			i++
 			continue
@@ -149,7 +177,7 @@ func inlines(in []Inline, heading, start bool) string {
 		}
 		run := segs[i:j]
 		if segs[i].link == "" {
-			sb.WriteString(formatted(run, sb.Len() == lineStart && (start || lineStart > 0)))
+			sb.WriteString(formatted(run, !cell && sb.Len() == lineStart && (start || lineStart > 0)))
 		} else if text := formatted(run, false); strings.TrimSpace(text) != "" {
 			sb.WriteString("[" + text + "](" + destination(segs[i].link) + ")")
 		}
@@ -251,7 +279,7 @@ func codeSpan(s string) string {
 
 // destination writes a link address so that it cannot end the link early.
 func destination(link string) string {
-	return strings.NewReplacer(" ", "%20", "(", "%28", ")", "%29", "<", "%3C", ">", "%3E", "\n", "", "\r", "", "\t", "%20").Replace(link)
+	return strings.NewReplacer(" ", "%20", "(", "%28", ")", "%29", "<", "%3C", ">", "%3E", "|", "%7C", "\n", "", "\r", "", "\t", "%20").Replace(link)
 }
 
 // escape protects the characters of s that Markdown would read as markup.

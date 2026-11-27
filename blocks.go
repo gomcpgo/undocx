@@ -13,9 +13,22 @@ import (
 )
 
 // Block is one paragraph-level piece of a document: a paragraph, a heading,
-// a list item or the title. Its Text and Markdown methods render it alone, which is
-// what a caller needs to cut a document into chunks on block boundaries.
+// a list item, the title or a table. Its Text and Markdown methods render it
+// alone, which is what a caller needs to cut a document into chunks on block
+// boundaries.
 type Block = model.Block
+
+// TableData is the content of a Table block: its rows, with each cell placed
+// on the grid of columns. To cut a long table into chunks, make a Block of
+// kind Table from some of its rows and render that.
+type TableData = model.TableData
+
+// Row is one row of a table.
+type Row = model.Row
+
+// Cell is one cell of a table. Its content is blocks again: paragraphs, list
+// items and tables nested in it.
+type Cell = model.Cell
 
 // BlockKind says what part a block plays in the document.
 type BlockKind = model.BlockKind
@@ -42,6 +55,8 @@ const (
 	// is its level in the list, from 1, and Block.Label its number or
 	// bullet.
 	ListItem = model.ListItem
+	// Table is a table. Block.Table holds its rows and cells.
+	Table = model.Table
 
 	// LabelText is a label Markdown has no list syntax for, such as "4.2",
 	// "(b)" or "Article VII". It is written as text at the start of the
@@ -89,6 +104,10 @@ const (
 	// WarnNumberFormat: list labels use a number format that is not
 	// supported, and their numbers were written in decimal.
 	WarnNumberFormat = body.WarnNumberFormat
+	// WarnMergedCell: table cells that are merged into the cell above them
+	// hold text of their own. Word shows only the text of the first cell
+	// of a merged group, so the rest was left out.
+	WarnMergedCell = body.WarnMergedCell
 )
 
 // ReadOptions says what of a document to read. The zero value reads the
@@ -181,9 +200,14 @@ func (d *Document) prepare(ctx context.Context) error {
 }
 
 // Blocks returns an iterator over the blocks of the document, in reading
-// order. The document is read as the iteration goes, a paragraph at a time,
-// so memory does not grow with its length and stopping early costs nothing
-// for what was not visited.
+// order. The document is read as the iteration goes, a paragraph or a table
+// at a time, so memory does not grow with its length and stopping early costs
+// nothing for what was not visited.
+//
+// A table is one block, with its rows and cells in Block.Table. A table
+// whose rows have one cell each is a frame around text, not a table, and its
+// paragraphs come as blocks of their own. A table of several thousand rows
+// comes as several Table blocks; see TableData.Continued.
 //
 // The iterator yields a non-nil error, and stops, when the context is
 // cancelled, when a limit is exceeded, or when the document is damaged from
@@ -221,7 +245,9 @@ func (d *Document) Blocks(ctx context.Context, opts ReadOptions) iter.Seq2[Block
 
 // WriteMarkdown writes the document to w as Markdown, a block at a time.
 // See Block.Markdown for how a block is written. List items are nested, and
-// the items of a list are written on consecutive lines.
+// the items of a list are written on consecutive lines. A table is a pipe
+// table, or an HTML table when it has merged cells, a table inside a cell or
+// more than one header row.
 func (d *Document) WriteMarkdown(ctx context.Context, w io.Writer, opts MarkdownOptions) error {
 	written := 0
 	var mw model.MarkdownWriter
@@ -256,8 +282,9 @@ func (d *Document) WriteMarkdown(ctx context.Context, w io.Writer, opts Markdown
 	return nil
 }
 
-// Markdown returns the document as Markdown: headings, paragraphs, inline
-// formatting and links. On an error it returns what was converted before it.
+// Markdown returns the document as Markdown: headings, paragraphs, lists,
+// tables, inline formatting and links. On an error it returns what was
+// converted before it.
 func (d *Document) Markdown(ctx context.Context, opts MarkdownOptions) (string, error) {
 	var sb strings.Builder
 	err := d.WriteMarkdown(ctx, &sb, opts)
@@ -267,6 +294,7 @@ func (d *Document) Markdown(ctx context.Context, opts MarkdownOptions) (string, 
 // WriteText writes the document to w as plain text, one block per line. A
 // line break inside a paragraph is a line end too. A list item starts with
 // its label, and is indented by two spaces for each level below the first.
+// A table is one line for each row, with a tab between cells.
 func (d *Document) WriteText(ctx context.Context, w io.Writer, opts ReadOptions) error {
 	for b, err := range d.Blocks(ctx, opts) {
 		if err != nil {

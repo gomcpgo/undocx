@@ -2,7 +2,7 @@
 
 A pure-Go package that reads Word documents (`.docx`) and returns their content as Markdown, plain text or a structured model, for language models and search indexes. It is the companion of [unpdf](https://github.com/gomcpgo/unpdf) and the reverse of [htmltodocx](https://github.com/gomcpgo/htmltodocx).
 
-**Status: early. The package reads text, headings, formatting, links, fields and lists with the numbers Word shows. Tables come out as their paragraphs; see "Not yet" below.**
+**Status: early. The package reads text, headings, formatting, links, fields, lists with the numbers Word shows, and tables. See "Not yet" below.**
 
 What works today:
 
@@ -14,9 +14,10 @@ What works today:
 - Headings by outline level and built-in style name, so documents in any language and with renamed styles work.
 - Bold, italic, strike-through, superscript, subscript and code; links; the cached results of fields.
 - Lists and numbered headings with the labels Word displays, counted the way Word counts: `4.2`, `(b)`, `iii.`, `Article VII`, continued across interruptions and restarted where Word restarts them. Bullets and plain `1.` lists become Markdown lists; other labels are kept as text, so "see clause 4.2" still means something.
-- Each block with the headings it stands under, for citations and for cutting a document into chunks.
+- Tables with their cells where a reader sees them: merged cells, tables in cells, header rows, and the hair-wide columns Word leaves in a grid folded away. A pipe table in Markdown, or an HTML table where cells are merged; a line for each row with tabs between cells in plain text. A table that only frames text is written as that text.
+- Each block with the headings it stands under, for citations and for cutting a document into chunks. A table is one block with its rows and cells; a very long one comes in parts.
 
-Not yet: tables as tables, footnotes and endnotes, comments, form fields, images, equations.
+Not yet: footnotes and endnotes, comments, form fields, images, equations.
 
 ```go
 doc, err := undocx.OpenFile(ctx, "contract.docx", undocx.Options{})
@@ -64,7 +65,7 @@ $ go run ./cmd/undocx text contract.docx
 
 ## Test documents
 
-`internal/docxtest` builds packages from WordprocessingML written by hand from ECMA-376: 39 documents, one per feature, each with the text Word displays. No file saved by Word or any other program is part of this repository.
+`internal/docxtest` builds packages from WordprocessingML written by hand from ECMA-376: 41 documents, one per feature, each with the text Word displays. No file saved by Word or any other program is part of this repository.
 
 ```
 go test ./...
